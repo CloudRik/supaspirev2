@@ -1,0 +1,93 @@
+[
+  {
+    "name": "Bhai-Help-dev-v2",
+    "slug": "bhai-help-dev-v2",
+    "repo": "https://github.com/imasis07/Bhai-Help-dev-v2.git",
+    "port": 3000,
+    "container": "app_1777807023299610775",
+    "url": "http://13.233.87.37:3000/",
+    "status": "running",
+    "framework": "vite",
+    "deployMode": "static",
+    "createdAt": "2026-05-03T11:03:56.978Z",
+    "updatedAt": "2026-05-03T11:18:00.067Z"
+  },
+  {
+    "name": "Test",
+    "slug": "test",
+    "repo": "https://github.com/imasis07/Test.git",
+    "port": 3007,
+    "container": "app_1777808194474517793",
+    "url": "http://13.233.87.37:3007/",
+    "status": "running",
+    "framework": "vite",
+    "deployMode": "static",
+    "createdAt": "2026-05-03T11:33:11.490Z",
+    "updatedAt": "2026-05-03T11:40:22.077Z"
+  },
+  {
+    "name": "cervizo_live",
+    "slug": "cervizo_live",
+    "repo": "https://github.com/imasis07/cervizo_live.git",
+    "port": 3002,
+    "container": "app_1778610260411165020",
+    "url": "http://13.233.87.37:3002/",
+    "status": "running",
+    "framework": "vite",
+    "deployMode": "static",
+    "createdAt": "2026-05-12T18:25:06.717Z",
+    "updatedAt": "2026-05-12T18:25:06.720Z"
+  },
+  {
+    "name": "Bhai-Help",
+    "slug": "bhai-help",
+    "repo": "https://github.com/imasis07/Bhai-Help.git",
+    "port": 3006,
+    "container": "app_1778782487646055605",
+    "url": "http://13.233.87.37:3006/",
+    "status": "running",
+    "framework": "monorepo",
+    "deployMode": "static",
+    "createdAt": "2026-05-03T11:31:21.960Z",
+    "updatedAt": "2026-05-14T18:15:30.949Z"
+  },
+  {
+    "name": "unified-auth-flow",
+    "slug": "unified-auth-flow",
+    "repo": "https://github.com/imasis07/unified-auth-flow.git",
+    "port": 3001,
+    "container": "app_1778863626596894233",
+    "url": "http://13.233.87.37:3001/",
+    "status": "running",
+    "framework": "vite",
+    "deployMode": "static",
+    "createdAt": "2026-05-15T16:48:18.857Z",
+    "updatedAt": "2026-05-15T16:48:18.858Z"
+  },
+  {
+    "name": "vanilla-basic",
+    "slug": "vanilla-basic",
+    "repo": "https://github.com/static-web-apps/vanilla-basic.git",
+    "port": 3003,
+    "container": "app_1778870885562626403",
+    "url": "http://13.233.87.37:3003/",
+    "status": "failed",
+    "framework": "unknown",
+    "deployMode": "static",
+    "createdAt": "2026-05-15T18:47:30.546Z",
+    "updatedAt": "2026-05-15T18:48:06.165Z"
+  },
+  {
+    "name": "Spoon-Knife",
+    "slug": "spoon-knife",
+    "repo": "https://github.com/octocat/Spoon-Knife.git",
+    "port": 3004,
+    "container": "app_1778870940251774540",
+    "url": "http://13.233.87.37:3004/",
+    "status": "running",
+    "framework": "html",
+    "deployMode": "static",
+    "createdAt": "2026-05-15T18:49:03.733Z",
+    "updatedAt": "2026-05-15T18:49:03.733Z"
+  }
+]

@@ -1,0 +1,122 @@
+You are a senior software engineer. Clean and restructure my project into a production-ready structure.
+
+## 🎯 Goal
+
+Organize the repository for a SaaS product called "Zenith OS" with clear separation of frontend, backend, and documentation.
+
+---
+
+## 📂 Current Situation
+
+The project contains mixed folders like:
+
+* .agents
+* artifacts
+* attached_assets
+* zenith-os-standalone
+* lib
+* scripts
+* node_modules
+* package.json
+* pnpm-workspace.yaml
+
+Some of these are temporary or unnecessary.
+
+---
+
+## 🧱 Target Structure
+
+Create this clean structure:
+
+zenith-os/
+├── frontend/        (main UI code)
+├── backend/         (empty for now)
+├── docs/            (documentation)
+├── scripts/         (keep only if useful)
+├── package.json
+├── pnpm-workspace.yaml
+└── README.md
+
+---
+
+## 🔧 Tasks to Perform
+
+### 1. Frontend Setup
+
+* Move or rename the main UI project (currently inside "zenith-os-standalone" or similar) into:
+  → /frontend
+
+---
+
+### 2. Backend Setup
+
+* Create a new folder:
+  → /backend
+* Keep it empty
+
+---
+
+### 3. Documentation
+
+* Create:
+  → /docs
+* Add files:
+
+  * vision.md
+  * phase1.md
+
+---
+
+### 4. Delete Unnecessary Files/Folders
+
+Safely remove:
+
+* .agents
+* artifacts
+* attached_assets
+* zenith-os-standalone.tar.gz
+
+---
+
+### 5. Keep Carefully
+
+* Do NOT delete:
+
+  * package.json
+  * pnpm-workspace.yaml
+  * node_modules (but ensure it's in .gitignore)
+
+---
+
+### 6. Scripts Folder
+
+* Keep "scripts" only if it contains useful automation
+* Otherwise remove it
+
+---
+
+### 7. Ensure Working State
+
+* After restructuring:
+
+  * frontend project should still run (npm install + npm run dev)
+  * no broken imports
+
+---
+
+## ⚠️ Important Rules
+
+* Do NOT break the project
+* Do NOT delete actual source code
+* Only remove temporary or unused files
+* Keep everything functional
+
+---
+
+## ✅ Output Required
+
+* Final folder structure
+* List of changes made
+* Confirmation that project still runs
+
+---

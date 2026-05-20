@@ -1,0 +1,8 @@
+uploads = []
+generated = []
+
+[[outputs]]
+id = "M-s1L3eMMK3w3iarFjP4j"
+uri = "file://zenith-os-standalone.tar.gz"
+type = "unspecified"
+title = "zenith-os-standalone.tar.gz — Portable Vite + React project"

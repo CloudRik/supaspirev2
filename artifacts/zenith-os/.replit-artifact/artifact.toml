@@ -1,0 +1,31 @@
+kind = "web"
+previewPath = "/"
+title = "Zenith OS Landing"
+version = "1.0.0"
+id = "artifacts/zenith-os"
+router = "path"
+
+[[integratedSkills]]
+name = "react-vite"
+version = "1.0.0"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 24245
+
+[services.development]
+run = "pnpm --filter @workspace/zenith-os run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/zenith-os", "run", "build" ]
+publicDir = "artifacts/zenith-os/dist/public"
+serve = "static"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "24245"
+BASE_PATH = "/"
