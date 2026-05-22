@@ -23,12 +23,12 @@ function processQueue() {
 
   // Notify others in queue about updated positions
   deployQueue.forEach((j, idx) => {
-    try { j.send({type:'queued', position: idx + 1, total: deployQueue.length + 1}); } catch(e) {}
+    try { j.send({ type: 'queued', position: idx + 1, total: deployQueue.length + 1 }); } catch (e) { }
   });
 
-  job.send({type:'log', line:'=== ZenithOS Deploy Starting ==='});
-  job.send({type:'log', line:'Repo: ' + job.repo});
-  job.send({type:'log', line:'Port: ' + job.port});
+  job.send({ type: 'log', line: '=== ZenithOS Deploy Starting ===' });
+  job.send({ type: 'log', line: 'Repo: ' + job.repo });
+  job.send({ type: 'log', line: 'Port: ' + job.port });
 
   const child = spawn('bash', [DEPLOY_SCRIPT, job.repo, String(job.port)], {
     cwd: path.dirname(DEPLOY_SCRIPT)
@@ -39,11 +39,11 @@ function processQueue() {
   let framework = 'unknown';
   let deployMode = 'static';
 
-  child.stdout.on('data', function(d) {
+  child.stdout.on('data', function (d) {
     const text = d.toString();
     logs += text;
     text.split('\n').filter(l => l.trim()).forEach(line => {
-      job.send({type:'log', line});
+      job.send({ type: 'log', line });
       const cm = line.match(/Container:\s*(app_\S+)/);
       if (cm) actualContainer = cm[1].trim();
       const fm = line.match(/Framework detected:\s*(\S+)/);
@@ -53,13 +53,13 @@ function processQueue() {
     });
   });
 
-  child.stderr.on('data', function(d) {
+  child.stderr.on('data', function (d) {
     const text = d.toString();
     logs += text;
-    text.split('\n').filter(l => l.trim()).forEach(line => job.send({type:'log', line}));
+    text.split('\n').filter(l => l.trim()).forEach(line => job.send({ type: 'log', line }));
   });
 
-  child.on('close', function(code) {
+  child.on('close', function (code) {
     clearInterval(job.heartbeat);
     const liveUrl = 'http://' + PUBLIC_IP + ':' + job.port + '/';
     const containerName = actualContainer || ('app_' + Date.now());
@@ -76,14 +76,14 @@ function processQueue() {
     saveProjects(allProjects);
     if (code === 0) regenerateNginxConfig();
 
-    job.send({type:'done', success: code === 0, url: code === 0 ? liveUrl : null, project, framework});
+    job.send({ type: 'done', success: code === 0, url: code === 0 ? liveUrl : null, project, framework });
     job.res.end();
 
     deployRunning = false;
     processQueue();
   });
 
-  job.cancelFn = () => { clearInterval(job.heartbeat); try { child.kill('SIGTERM'); } catch(e) {} };
+  job.cancelFn = () => { clearInterval(job.heartbeat); try { child.kill('SIGTERM'); } catch (e) { } };
 }
 
 const PORT_START = 3000;
@@ -124,14 +124,14 @@ function getNextPort() {
 }
 function stopContainer(containerName) {
   if (!containerName) return;
-  try { execSync('docker stop ' + containerName + ' 2>/dev/null || true', { stdio: 'ignore' }); } catch {}
-  try { execSync('docker rm ' + containerName + ' 2>/dev/null || true', { stdio: 'ignore' }); } catch {}
-  try { execSync('docker rmi zenith_' + containerName + ' 2>/dev/null || true', { stdio: 'ignore' }); } catch {}
+  try { execSync('docker stop ' + containerName + ' 2>/dev/null || true', { stdio: 'ignore' }); } catch { }
+  try { execSync('docker rm ' + containerName + ' 2>/dev/null || true', { stdio: 'ignore' }); } catch { }
+  try { execSync('docker rmi zenith_' + containerName + ' 2>/dev/null || true', { stdio: 'ignore' }); } catch { }
 }
 function cleanDeployDir(containerName) {
   if (!containerName) return;
   const dir = path.join(DEPLOYS_DIR, containerName);
-  try { if (fs.existsSync(dir)) execSync('rm -rf ' + dir, { stdio: 'ignore' }); } catch {}
+  try { if (fs.existsSync(dir)) execSync('rm -rf ' + dir, { stdio: 'ignore' }); } catch { }
 }
 function regenerateNginxConfig() {
   const projects = loadProjects().filter(p => p.status === 'running');
@@ -162,8 +162,8 @@ function runDeploy(repo, res, isStream) {
     cleanDeployDir(existing.container);
     port = existing.port;
   } else {
-    try { port = getNextPort(); } catch(e) {
-      if (isStream) { res.write('data: ' + JSON.stringify({type:'done',success:false,error:'No ports available'}) + '\n\n'); res.end(); }
+    try { port = getNextPort(); } catch (e) {
+      if (isStream) { res.write('data: ' + JSON.stringify({ type: 'done', success: false, error: 'No ports available' }) + '\n\n'); res.end(); }
       else res.status(500).json({ error: 'No ports available' });
       return;
     }
@@ -173,9 +173,9 @@ function runDeploy(repo, res, isStream) {
     ? (obj) => res.write('data: ' + JSON.stringify(obj) + '\n\n')
     : (obj) => { if (obj.type === 'log') console.log(obj.line); };
 
-  send({type:'log', line:'=== ZenithOS Deploy Starting ==='});
-  send({type:'log', line:'Repo: ' + repo});
-  send({type:'log', line:'Port: ' + port});
+  send({ type: 'log', line: '=== ZenithOS Deploy Starting ===' });
+  send({ type: 'log', line: 'Repo: ' + repo });
+  send({ type: 'log', line: 'Port: ' + port });
 
   const child = spawn('bash', [DEPLOY_SCRIPT, repo, String(port)], {
     cwd: path.dirname(DEPLOY_SCRIPT)
@@ -186,11 +186,11 @@ function runDeploy(repo, res, isStream) {
   let framework = 'unknown';
   let deployMode = 'static';
 
-  child.stdout.on('data', function(d) {
+  child.stdout.on('data', function (d) {
     const text = d.toString();
     logs += text;
     text.split('\n').filter(l => l.trim()).forEach(line => {
-      send({type:'log', line});
+      send({ type: 'log', line });
       const cm = line.match(/Container:\s*(app_\S+)/);
       if (cm) actualContainer = cm[1].trim();
       const fm = line.match(/Framework detected:\s*(\S+)/);
@@ -200,13 +200,13 @@ function runDeploy(repo, res, isStream) {
     });
   });
 
-  child.stderr.on('data', function(d) {
+  child.stderr.on('data', function (d) {
     const text = d.toString();
     logs += text;
-    text.split('\n').filter(l => l.trim()).forEach(line => send({type:'log', line}));
+    text.split('\n').filter(l => l.trim()).forEach(line => send({ type: 'log', line }));
   });
 
-  child.on('close', function(code) {
+  child.on('close', function (code) {
     const liveUrl = 'http://' + PUBLIC_IP + ':' + port + '/';
     const containerName = actualContainer || ('app_' + Date.now());
     const project = {
@@ -222,7 +222,7 @@ function runDeploy(repo, res, isStream) {
     if (code === 0) regenerateNginxConfig();
 
     if (isStream) {
-      send({type:'done', success: code === 0, url: code === 0 ? liveUrl : null, project, framework});
+      send({ type: 'done', success: code === 0, url: code === 0 ? liveUrl : null, project, framework });
       res.end();
     } else {
       res.json({ success: code === 0, logs, url: code === 0 ? liveUrl : null, project, framework });
@@ -230,14 +230,14 @@ function runDeploy(repo, res, isStream) {
   });
 
   if (isStream) {
-    req.on('close', () => { try { child.kill(); } catch(e) {} });
+    req.on('close', () => { try { child.kill(); } catch (e) { } });
   }
 }
 
 app.get('/', (_req, res) => res.json({ status: 'ZenithOS Backend Running', ip: PUBLIC_IP }));
 app.get('/api/test', (_req, res) => res.json({ message: 'API working', ip: PUBLIC_IP }));
 app.get('/projects', (_req, res) => res.json(loadProjects()));
-app.get('/queue', (_req, res) => res.json({ running: deployRunning, queued: deployQueue.length, total: deployQueue.length + (deployRunning ? 1 : 0), projects: deployQueue.map((j,i) => ({name: j.repoName, position: i+2})) }));
+app.get('/queue', (_req, res) => res.json({ running: deployRunning, queued: deployQueue.length, total: deployQueue.length + (deployRunning ? 1 : 0), projects: deployQueue.map((j, i) => ({ name: j.repoName, position: i + 2 })) }));
 
 
 // SSE streaming endpoint
@@ -252,7 +252,7 @@ app.get('/deploy/stream', (req, res) => {
   if (match) {
     const token = match[1];
     repo = 'https://github.com/' + match[2];
-    
+
     // Save to env_vars.json under repoName
     const allEnv = loadAllEnvVars();
     const projectEnv = allEnv[repoName] || {};
@@ -277,20 +277,20 @@ app.get('/deploy/stream', (req, res) => {
     cleanDeployDir(existing.container);
     port = existing.port;
   } else {
-    try { port = getNextPort(); } catch(e) {
-      res.write('data: ' + JSON.stringify({type:'done',success:false,error:'No ports available'}) + '\n\n');
+    try { port = getNextPort(); } catch (e) {
+      res.write('data: ' + JSON.stringify({ type: 'done', success: false, error: 'No ports available' }) + '\n\n');
       res.end(); return;
     }
   }
 
-  const send = (obj) => { try { res.write('data: ' + JSON.stringify(obj) + '\n\n'); } catch(e) {} };
+  const send = (obj) => { try { res.write('data: ' + JSON.stringify(obj) + '\n\n'); } catch (e) { } };
   const heartbeat = setInterval(() => {
-    try { res.write(': heartbeat\n\n'); } catch(e) { clearInterval(heartbeat); }
+    try { res.write(': heartbeat\n\n'); } catch (e) { clearInterval(heartbeat); }
   }, 8000);
 
   const queuePos = deployQueue.length + (deployRunning ? 1 : 0);
   if (queuePos > 0) {
-    send({type:'queued', position: queuePos + 1, total: queuePos + 1});
+    send({ type: 'queued', position: queuePos + 1, total: queuePos + 1 });
   }
 
   const job = { repo, port, repoName, slug, existing, send, res, heartbeat, cancelFn: null };
@@ -300,7 +300,7 @@ app.get('/deploy/stream', (req, res) => {
   req.on('close', () => {
     clearInterval(heartbeat);
     const idx = deployQueue.indexOf(job);
-    if (idx !== -1) { deployQueue.splice(idx, 1); try { res.end(); } catch(e) {} }
+    if (idx !== -1) { deployQueue.splice(idx, 1); try { res.end(); } catch (e) { } }
     else if (job.cancelFn) job.cancelFn();
   });
 });
@@ -317,7 +317,7 @@ app.post('/deploy', (req, res) => {
   if (match) {
     const token = match[1];
     repo = 'https://github.com/' + match[2];
-    
+
     // Save to env_vars.json under repoName
     const allEnv = loadAllEnvVars();
     const projectEnv = allEnv[repoName] || {};
@@ -336,7 +336,7 @@ app.post('/deploy', (req, res) => {
     cleanDeployDir(existing.container);
     port = existing.port;
   } else {
-    try { port = getNextPort(); } catch(e) {
+    try { port = getNextPort(); } catch (e) {
       return res.status(500).json({ error: 'No ports available' });
     }
   }
@@ -350,7 +350,7 @@ app.post('/deploy', (req, res) => {
   let framework = 'unknown';
   let deployMode = 'static';
 
-  child.stdout.on('data', function(d) {
+  child.stdout.on('data', function (d) {
     const text = d.toString();
     logs += text;
     text.split('\n').filter(l => l.trim()).forEach(line => {
@@ -362,9 +362,9 @@ app.post('/deploy', (req, res) => {
       if (mm) deployMode = mm[1].trim();
     });
   });
-  child.stderr.on('data', function(d) { logs += d.toString(); });
+  child.stderr.on('data', function (d) { logs += d.toString(); });
 
-  child.on('close', function(code) {
+  child.on('close', function (code) {
     const liveUrl = 'http://' + PUBLIC_IP + ':' + port + '/';
     const containerName = actualContainer || ('app_' + Date.now());
     const project = {
@@ -401,7 +401,7 @@ app.get('/projects/:name/logs', (req, res) => {
   const projects = loadProjects();
   const project = projects.find(p => p.name === name);
   if (!project) return res.status(404).json({ error: 'Project not found' });
-  
+
   const containerName = project.container || name;
   try {
     const logs = execSync(`docker logs --tail=${lines} ${containerName} 2>&1`, { timeout: 5000 }).toString();
@@ -417,7 +417,7 @@ app.post('/projects/:name/start', (req, res) => {
   const projects = loadProjects();
   const index = projects.findIndex(p => p.name === name);
   if (index === -1) return res.status(404).json({ error: 'Project not found' });
-  
+
   const project = projects[index];
   const containerName = project.container || name;
   try {
@@ -436,7 +436,7 @@ app.post('/projects/:name/stop', (req, res) => {
   const projects = loadProjects();
   const index = projects.findIndex(p => p.name === name);
   if (index === -1) return res.status(404).json({ error: 'Project not found' });
-  
+
   const project = projects[index];
   const containerName = project.container || name;
   try {
@@ -455,7 +455,7 @@ app.post('/projects/:name/restart', (req, res) => {
   const projects = loadProjects();
   const index = projects.findIndex(p => p.name === name);
   if (index === -1) return res.status(404).json({ error: 'Project not found' });
-  
+
   const project = projects[index];
   const containerName = project.container || name;
   try {
@@ -490,7 +490,7 @@ app.get('/projects/:name/logs/stream', (req, res) => {
   const { name } = req.params;
   const tail = parseInt(req.query.tail) || 50;
   const projects = loadProjects();
-  const project = projects.find(function(p) { return p.name === name; });
+  const project = projects.find(function (p) { return p.name === name; });
   const containerName = (project && project.container) ? project.container : name;
 
   res.setHeader('Content-Type', 'text/event-stream');
@@ -499,7 +499,7 @@ app.get('/projects/:name/logs/stream', (req, res) => {
   res.setHeader('X-Accel-Buffering', 'no');
   res.flushHeaders();
 
-  const send = function(data) {
+  const send = function (data) {
     res.write('data: ' + JSON.stringify(data) + '\n\n');
   };
 
@@ -509,9 +509,9 @@ app.get('/projects/:name/logs/stream', (req, res) => {
       'docker logs --tail=' + tail + ' ' + containerName + ' 2>&1',
       { timeout: 5000 }
     ).toString();
-    const lines = recent.split('\n').filter(function(l) { return l.trim(); });
-    lines.forEach(function(line) { send({ type: 'log', line: line }); });
-  } catch(e) {
+    const lines = recent.split('\n').filter(function (l) { return l.trim(); });
+    lines.forEach(function (line) { send({ type: 'log', line: line }); });
+  } catch (e) {
     send({ type: 'error', message: 'Could not fetch initial logs: ' + e.message });
   }
 
@@ -522,24 +522,24 @@ app.get('/projects/:name/logs/stream', (req, res) => {
       stdio: ['ignore', 'pipe', 'pipe']
     });
 
-    const onData = function(data) {
-      data.toString().split('\n').forEach(function(line) {
+    const onData = function (data) {
+      data.toString().split('\n').forEach(function (line) {
         if (line.trim()) send({ type: 'log', line: line });
       });
     };
 
     child.stdout.on('data', onData);
     child.stderr.on('data', onData);
-    child.on('error', function(e) { send({ type: 'error', message: e.message }); });
-    child.on('close', function() { send({ type: 'done' }); res.end(); });
-  } catch(e) {
+    child.on('error', function (e) { send({ type: 'error', message: e.message }); });
+    child.on('close', function () { send({ type: 'done' }); res.end(); });
+  } catch (e) {
     send({ type: 'error', message: e.message });
     res.end();
     return;
   }
 
-  req.on('close', function() {
-    if (child) { try { child.kill('SIGTERM'); } catch(e) {} }
+  req.on('close', function () {
+    if (child) { try { child.kill('SIGTERM'); } catch (e) { } }
     res.end();
   });
 });
@@ -551,11 +551,11 @@ let _statsUpdating = false;
 function refreshStatsCache() {
   if (_statsUpdating) return;
   _statsUpdating = true;
-  require('child_process').exec('docker stats --no-stream --format "{{json .}}"', { timeout: 12000 }, function(err, stdout) {
+  require('child_process').exec('docker stats --no-stream --format "{{json .}}"', { timeout: 12000 }, function (err, stdout) {
     _statsUpdating = false;
     if (err || !stdout) return;
-    const parsed = stdout.trim().split('\n').filter(function(l) { return l.trim(); }).map(function(l) {
-      try { return JSON.parse(l); } catch(e) { return null; }
+    const parsed = stdout.trim().split('\n').filter(function (l) { return l.trim(); }).map(function (l) {
+      try { return JSON.parse(l); } catch (e) { return null; }
     }).filter(Boolean);
     if (parsed.length > 0) _statsCache = parsed;
   });
@@ -566,7 +566,7 @@ refreshStatsCache();
 // Keep refreshing every 4 seconds
 setInterval(refreshStatsCache, 4000);
 
-app.get('/stats', function(_req, res) {
+app.get('/stats', function (_req, res) {
   res.json(_statsCache);
   // Trigger a fresh update in background
   refreshStatsCache();
@@ -652,17 +652,17 @@ app.post('/webhook/:slug', express.raw({ type: '*/*' }), (req, res) => {
     const sig = req.headers['x-hub-signature-256'];
     if (!sig) return res.status(401).json({ error: 'Missing X-Hub-Signature-256 header' });
     const rawBody = req.rawBody || Buffer.from(JSON.stringify(req.body) || '');
-  const expected = 'sha256=' + crypto.createHmac('sha256', secret).update(rawBody).digest('hex');
+    const expected = 'sha256=' + crypto.createHmac('sha256', secret).update(rawBody).digest('hex');
     const sigBuf = Buffer.from(sig.padEnd(expected.length, '0'));
-  const expBuf = Buffer.from(expected);
-  if (sigBuf.length !== expBuf.length || !crypto.timingSafeEqual(sigBuf, expBuf)) {
+    const expBuf = Buffer.from(expected);
+    if (sigBuf.length !== expBuf.length || !crypto.timingSafeEqual(sigBuf, expBuf)) {
       return res.status(401).json({ error: 'Invalid signature' });
     }
   }
 
   // Parse payload
   let payload = {};
-  try { payload = JSON.parse(req.body.toString()); } catch {}
+  try { payload = JSON.parse(req.body.toString()); } catch { }
 
   // Only trigger on push to default branch
   const ref = payload.ref || '';
@@ -720,11 +720,11 @@ app.get('/projects/:name/logs', (req, res) => {
   const { name } = req.params;
   const lines = parseInt(req.query.lines) || 150;
   const projects = loadProjects();
-  const project = projects.find(function(p) { return p.name === name; });
+  const project = projects.find(function (p) { return p.name === name; });
   const containerName = (project && project.container) ? project.container : name;
   try {
     const out = execSync('docker logs --tail=' + lines + ' ' + containerName + ' 2>&1', { timeout: 6000 }).toString();
-    res.json({ logs: out.split('\n').filter(function(l) { return l.trim(); }), container: containerName });
+    res.json({ logs: out.split('\n').filter(function (l) { return l.trim(); }), container: containerName });
   } catch (e) {
     res.json({ logs: [], container: containerName });
   }
@@ -777,7 +777,7 @@ app.get('/api/auth/github', (req, res) => {
 app.get('/api/auth/github/callback', async (req, res) => {
   const { code } = req.query;
   if (!code) return res.status(400).send('Code required');
-  
+
   const config = loadGitHubOauth();
   try {
     const tokenRes = await fetch('https://github.com/login/oauth/access_token', {
@@ -792,15 +792,15 @@ app.get('/api/auth/github/callback', async (req, res) => {
         code
       })
     });
-    
+
     const tokenData = await tokenRes.json();
     if (tokenData.error) {
       return res.status(400).send('OAuth error: ' + tokenData.error_description);
     }
-    
+
     const accessToken = tokenData.access_token;
     fs.writeFileSync(GITHUB_TOKEN_FILE, JSON.stringify({ access_token: accessToken }));
-    
+
     res.send(`
       <script>
         if (window.opener) {
@@ -839,10 +839,10 @@ app.get('/api/github/repos', async (req, res) => {
     if (fs.existsSync(GITHUB_TOKEN_FILE)) {
       token = JSON.parse(fs.readFileSync(GITHUB_TOKEN_FILE, 'utf-8')).access_token;
     }
-  } catch (e) {}
-  
+  } catch (e) { }
+
   if (!token) return res.status(401).json({ error: 'GitHub not connected' });
-  
+
   try {
     const reposRes = await fetch('https://api.github.com/user/repos?per_page=100&sort=updated', {
       headers: {
@@ -851,11 +851,11 @@ app.get('/api/github/repos', async (req, res) => {
         'User-Agent': 'Zenith-OS-Server'
       }
     });
-    
+
     if (!reposRes.ok) {
       return res.status(reposRes.status).json({ error: 'Failed to fetch repos' });
     }
-    
+
     const repos = await reposRes.json();
     const cleanRepos = repos.map(r => ({
       name: r.name,
@@ -866,7 +866,7 @@ app.get('/api/github/repos', async (req, res) => {
       clone_url: r.clone_url,
       default_branch: r.default_branch
     }));
-    
+
     res.json(cleanRepos);
   } catch (e) {
     console.error('Failed fetching repos', e);
@@ -882,7 +882,7 @@ app.get('/api/projects/:name/stats', (req, res) => {
   const projects = loadProjects();
   const project = projects.find(p => p.name === name);
   if (!project) return res.status(404).json({ error: 'Project not found' });
-  
+
   const containerName = project.container || name;
   try {
     const out = execSync(`docker stats --no-stream --format '{"cpu":"{{.CPUPerc}}","memory":"{{.MemUsage}}","net":"{{.NetIO}}","memPerc":"{{.MemPerc}}"}' ${containerName} 2>/dev/null`, { timeout: 3000 }).toString();
@@ -906,8 +906,8 @@ app.get('/api/projects/:name/stats', (req, res) => {
 // DATABASE PROVISIONING (PostgreSQL + Redis)
 // ─────────────────────────────────────────────────────────────────────────────
 const DATABASES_FILE = path.resolve(__dirname, 'databases.json');
-const DB_PORT_START  = 5400;
-const DB_PORT_END    = 5499;
+const DB_PORT_START = 5400;
+const DB_PORT_END = 5499;
 
 function loadDatabases() {
   try { return JSON.parse(fs.readFileSync(DATABASES_FILE, 'utf-8')); } catch { return []; }
@@ -917,8 +917,8 @@ function saveDatabases(dbs) {
 }
 function getNextDbPort(type) {
   const start = type === 'redis' ? 6370 : DB_PORT_START;
-  const end   = type === 'redis' ? 6469 : DB_PORT_END;
-  const used  = loadDatabases().map(d => d.port);
+  const end = type === 'redis' ? 6469 : DB_PORT_END;
+  const used = loadDatabases().map(d => d.port);
   for (let p = start; p <= end; p++) {
     if (!used.includes(p)) return p;
   }
@@ -943,49 +943,49 @@ app.post('/api/databases', (req, res) => {
     return res.status(400).json({ error: 'name and type (postgres|redis) required' });
   }
 
-  const slug     = name.replace(/[^a-zA-Z0-9_-]/g, '-').toLowerCase();
-  const dbs      = loadDatabases();
+  const slug = name.replace(/[^a-zA-Z0-9_-]/g, '-').toLowerCase();
+  const dbs = loadDatabases();
   if (dbs.find(d => d.name === slug)) {
     return res.status(409).json({ error: 'Database with this name already exists' });
   }
 
   let port, password, containerName, cmd;
-  try { port = getNextDbPort(type); } catch(e) {
+  try { port = getNextDbPort(type); } catch (e) {
     return res.status(500).json({ error: e.message });
   }
 
-  password      = randomPassword();
+  password = randomPassword();
   containerName = `zenith_db_${slug}`;
 
   if (type === 'postgres') {
     const dataDir = `/home/ubuntu/postgres_data/${slug}`;
     execSync(`mkdir -p ${dataDir}`);
     cmd = `docker run -d --name ${containerName} --network zenith-network ` +
-          `-e POSTGRES_PASSWORD=${password} -e POSTGRES_USER=zenith -e POSTGRES_DB=${slug} ` +
-          `-p ${port}:5432 -v ${dataDir}:/var/lib/postgresql/data ` +
-          `--restart unless-stopped postgres:15-alpine`;
+      `-e POSTGRES_PASSWORD=${password} -e POSTGRES_USER=zenith -e POSTGRES_DB=${slug} ` +
+      `-p ${port}:5432 -v ${dataDir}:/var/lib/postgresql/data ` +
+      `--restart unless-stopped postgres:15-alpine`;
   } else {
     cmd = `docker run -d --name ${containerName} --network zenith-network ` +
-          `-p ${port}:6379 --restart unless-stopped redis:alpine ` +
-          `redis-server --requirepass ${password}`;
+      `-p ${port}:6379 --restart unless-stopped redis:alpine ` +
+      `redis-server --requirepass ${password}`;
   }
 
   try {
     execSync(cmd, { timeout: 60000 });
-  } catch(e) {
+  } catch (e) {
     return res.status(500).json({ error: 'Docker run failed: ' + e.message });
   }
 
   const db = {
-    id:            Date.now(),
-    name:          slug,
+    id: Date.now(),
+    name: slug,
     type,
     port,
     password,
     containerName,
-    createdAt:     new Date().toISOString(),
-    internalHost:  containerName,
-    externalHost:  PUBLIC_IP,
+    createdAt: new Date().toISOString(),
+    internalHost: containerName,
+    externalHost: PUBLIC_IP,
   };
 
   dbs.push(db);
@@ -997,14 +997,14 @@ app.post('/api/databases', (req, res) => {
 app.delete('/api/databases/:name', (req, res) => {
   const { name } = req.params;
   const dbs = loadDatabases();
-  const idx  = dbs.findIndex(d => d.name === name);
+  const idx = dbs.findIndex(d => d.name === name);
   if (idx === -1) return res.status(404).json({ error: 'Not found' });
 
   const db = dbs[idx];
   try {
     execSync(`docker stop ${db.containerName} 2>/dev/null || true`);
     execSync(`docker rm   ${db.containerName} 2>/dev/null || true`);
-  } catch(e) { /* ignore */ }
+  } catch (e) { /* ignore */ }
 
   dbs.splice(idx, 1);
   saveDatabases(dbs);

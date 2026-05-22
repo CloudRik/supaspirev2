@@ -499,6 +499,15 @@ if [ "$DEPLOY_MODE" = "static" ]; then
   cp -r "$BUILD_DIR/." "$PERMANENT_DIR/"
   chmod -R 755 "$PERMANENT_DIR" 2>/dev/null || true
 
+  # Validation: If index.html is missing in the root of static deployment, fail the deployment!
+  if [ ! -f "$PERMANENT_DIR/index.html" ]; then
+    echo "Error: Static deployment validation failed. index.html not found in the root of build output ($DIST_PATH)."
+    echo "Please check if your framework's build output directory is configured correctly."
+    # Clean up the created directory to avoid orphaned folders
+    rm -rf "$PERMANENT_DIR" 2>/dev/null || true
+    exit 1
+  fi
+
 elif [ "$DEPLOY_MODE" = "dynamic" ]; then
   echo ""
   echo "Copying app to permanent storage..."

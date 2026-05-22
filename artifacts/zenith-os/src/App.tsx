@@ -799,8 +799,8 @@ function PricingCard({ name, price, features, cta, popular = false }: { name: st
       whileInView={{ opacity: 1, y: 0 }}
       viewport={{ once: true }}
       className={`bg-[hsl(var(--card))] rounded-2xl p-8 flex flex-col relative transition-all hover:-translate-y-1 ${popular
-          ? 'border border-[hsl(var(--primary))] shadow-[0_0_30px_rgba(0,255,255,0.1)] md:-mt-8 md:mb-8'
-          : 'border border-[hsl(var(--border))]'
+        ? 'border border-[hsl(var(--primary))] shadow-[0_0_30px_rgba(0,255,255,0.1)] md:-mt-8 md:mb-8'
+        : 'border border-[hsl(var(--border))]'
         }`}
     >
       {popular && (
@@ -824,8 +824,8 @@ function PricingCard({ name, price, features, cta, popular = false }: { name: st
       </ul>
 
       <button className={`w-full py-3 rounded-md font-semibold transition-all ${popular
-          ? 'bg-[hsl(var(--primary))] text-black hover:bg-[hsl(var(--primary))]/90 hover:shadow-[0_0_20px_rgba(0,255,255,0.3)]'
-          : 'bg-[hsl(var(--muted))] text-white hover:bg-[hsl(var(--border))]'
+        ? 'bg-[hsl(var(--primary))] text-black hover:bg-[hsl(var(--primary))]/90 hover:shadow-[0_0_20px_rgba(0,255,255,0.3)]'
+        : 'bg-[hsl(var(--muted))] text-white hover:bg-[hsl(var(--border))]'
         }`}>
         {cta}
       </button>

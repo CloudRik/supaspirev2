@@ -112,10 +112,10 @@ export default function ProjectDetail() {
       if (res.ok) {
         const data = await res.json() as { status: string };
         const mappedStatus = data.status === "running" ? "live" : data.status === "stopped" ? "stopped" : "failed";
-        
+
         // Update local state
         setProject(prev => prev ? { ...prev, status: mappedStatus } : null);
-        
+
         // Also update local storage cache so it persists!
         const saved = getProjects();
         const index = saved.findIndex(p => p.name === projectName);
@@ -317,9 +317,8 @@ export default function ProjectDetail() {
                 <button
                   key={tab.id}
                   onClick={() => setActiveTab(tab.id)}
-                  className={`relative inline-flex items-center gap-2 px-4 py-2.5 text-sm font-medium whitespace-nowrap transition-colors ${
-                    active ? "text-slate-900" : "text-slate-500 hover:text-slate-700"
-                  }`}
+                  className={`relative inline-flex items-center gap-2 px-4 py-2.5 text-sm font-medium whitespace-nowrap transition-colors ${active ? "text-slate-900" : "text-slate-500 hover:text-slate-700"
+                    }`}
                 >
                   <tab.icon className="w-4 h-4" />
                   {tab.label}
@@ -733,16 +732,16 @@ function makeRealLine(text: string): RealLogLine {
 }
 
 function LogsTab({ project }: { project: Project }) {
-  const [lines, setLines]           = useState<RealLogLine[]>([]);
-  const [loading, setLoading]       = useState(false);
-  const [streaming, setStreaming]   = useState(false);
-  const [connected, setConnected]   = useState(false);
-  const [filter, setFilter]         = useState("");
-  const [lineCount, setLineCount]   = useState(200);
+  const [lines, setLines] = useState<RealLogLine[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [streaming, setStreaming] = useState(false);
+  const [connected, setConnected] = useState(false);
+  const [filter, setFilter] = useState("");
+  const [lineCount, setLineCount] = useState(200);
 
-  const bottomRef   = useRef<HTMLDivElement>(null);
-  const esRef       = useRef<EventSource | null>(null);
-  const autoScroll  = useRef(true);
+  const bottomRef = useRef<HTMLDivElement>(null);
+  const esRef = useRef<EventSource | null>(null);
+  const autoScroll = useRef(true);
 
   const scrollBottom = useCallback(() => {
     if (autoScroll.current) bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -813,8 +812,8 @@ function LogsTab({ project }: { project: Project }) {
 
   function downloadLogs() {
     const blob = new Blob([lines.map((l) => l.text).join("\n")], { type: "text/plain" });
-    const url  = URL.createObjectURL(blob);
-    const a    = document.createElement("a");
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
     a.href = url; a.download = `${project.name}-logs.txt`; a.click();
     URL.revokeObjectURL(url);
   }
@@ -846,11 +845,10 @@ function LogsTab({ project }: { project: Project }) {
           {/* Live toggle */}
           <button
             onClick={handleToggleLive}
-            className={`inline-flex items-center gap-1.5 h-8 px-3 rounded-lg border text-xs font-semibold transition-all ${
-              streaming
-                ? "bg-rose-600 border-rose-600 text-white hover:bg-rose-700 shadow shadow-rose-500/30"
-                : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
-            }`}
+            className={`inline-flex items-center gap-1.5 h-8 px-3 rounded-lg border text-xs font-semibold transition-all ${streaming
+              ? "bg-rose-600 border-rose-600 text-white hover:bg-rose-700 shadow shadow-rose-500/30"
+              : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
+              }`}
           >
             {streaming
               ? <><Radio className="w-3 h-3 animate-pulse" /> Stop Live</>
@@ -1091,11 +1089,10 @@ function DnsSetupPanel({ domain, onVerified }: { domain: CustomDomain; onVerifie
                 <button
                   key={p}
                   onClick={() => setProvider(p)}
-                  className={`h-6 px-2.5 rounded-md text-[11px] font-medium transition-colors capitalize ${
-                    provider === p
-                      ? "bg-slate-800 text-white"
-                      : "bg-white border border-slate-200 text-slate-600 hover:bg-slate-50"
-                  }`}
+                  className={`h-6 px-2.5 rounded-md text-[11px] font-medium transition-colors capitalize ${provider === p
+                    ? "bg-slate-800 text-white"
+                    : "bg-white border border-slate-200 text-slate-600 hover:bg-slate-50"
+                    }`}
                 >
                   {p === "others" ? "Others" : p.charAt(0).toUpperCase() + p.slice(1)}
                 </button>
@@ -1331,7 +1328,7 @@ function DeleteProjectPage({ project }: { project: Project }) {
               <div className="grid grid-cols-2 gap-3 min-w-[240px]">
                 <div className="rounded-2xl bg-white/10 border border-white/15 p-4">
                   <div className="text-[11px] uppercase tracking-wider text-white/60">Deployments</div>
-                <div className="mt-1 text-2xl font-semibold">All</div>
+                  <div className="mt-1 text-2xl font-semibold">All</div>
                 </div>
                 <div className="rounded-2xl bg-white/10 border border-white/15 p-4">
                   <div className="text-[11px] uppercase tracking-wider text-white/60">Recovery</div>

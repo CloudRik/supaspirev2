@@ -408,8 +408,8 @@ function BuildingScreen({ state }: { state: DeployState }) {
                 {state.isFinalizing
                   ? "Finalizing live site..."
                   : state.logs.length === 0
-                  ? "Connecting to deploy server..."
-                  : "Live deploy logs streaming..."}
+                    ? "Connecting to deploy server..."
+                    : "Live deploy logs streaming..."}
               </div>
             </div>
           </div>
@@ -590,10 +590,10 @@ function FailedScreen({ state, retryPath }: { state: DeployState; retryPath: str
                           /error|fail|exit code [^0]/i.test(line)
                             ? "text-red-400"
                             : /warn/i.test(line)
-                            ? "text-amber-400"
-                            : /success|complete|live at/i.test(line)
-                            ? "text-emerald-400"
-                            : "text-slate-300"
+                              ? "text-amber-400"
+                              : /success|complete|live at/i.test(line)
+                                ? "text-emerald-400"
+                                : "text-slate-300"
                         }
                       >
                         {line || "\u00A0"}
@@ -691,12 +691,11 @@ function StepItem({ num, step, isLast }: { num: number; step: DeployStep; isLast
       </div>
       <div className="pt-0.5 min-w-0">
         <p
-          className={`text-sm font-medium ${
-            step.status === "done" ? "text-emerald-700" :
+          className={`text-sm font-medium ${step.status === "done" ? "text-emerald-700" :
             step.status === "running" ? "text-sky-700" :
-            step.status === "failed" ? "text-red-700" :
-            "text-slate-400"
-          }`}
+              step.status === "failed" ? "text-red-700" :
+                "text-slate-400"
+            }`}
         >
           {num}. {step.label}
         </p>
@@ -747,14 +746,14 @@ function Terminal({
                 /error|fail|exit code [^0]/i.test(line)
                   ? "text-red-400"
                   : /warn/i.test(line)
-                  ? "text-amber-400"
-                  : /success|complete|live at|framework detected/i.test(line)
-                  ? "text-emerald-400"
-                  : line.startsWith("→")
-                  ? "text-sky-400"
-                  : line.startsWith("=")
-                  ? "text-violet-400 font-semibold"
-                  : "text-slate-300"
+                    ? "text-amber-400"
+                    : /success|complete|live at|framework detected/i.test(line)
+                      ? "text-emerald-400"
+                      : line.startsWith("→")
+                        ? "text-sky-400"
+                        : line.startsWith("=")
+                          ? "text-violet-400 font-semibold"
+                          : "text-slate-300"
               }
             >
               {line || "\u00A0"}
