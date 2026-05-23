@@ -1,10 +1,51 @@
+import { useEffect } from "react";
 import { Link, useLocation } from "wouter";
 import { motion } from "framer-motion";
 import { Github, Zap, ArrowLeft, ShieldCheck } from "lucide-react";
 import { FcGoogle } from "react-icons/fc";
+import { useAuth } from "@/hooks/useAuth";
+
+const API_URL = import.meta.env.VITE_API_URL || "http://localhost:5000";
 
 export default function SignIn() {
   const [, navigate] = useLocation();
+  const setAuth = useAuth((state) => state.setAuth);
+
+  useEffect(() => {
+    const handleMessage = async (event: MessageEvent) => {
+      // Make sure message is from trusted origin in production
+      if (event.data?.type === 'AUTH_SUCCESS' && event.data.token) {
+        const token = event.data.token;
+        try {
+          const res = await fetch(`${API_URL}/api/auth/me`, {
+            headers: { Authorization: `Bearer ${token}` }
+          });
+          if (res.ok) {
+            const user = await res.json();
+            setAuth(user, token);
+            navigate("/dashboard");
+          }
+        } catch (error) {
+          console.error("Auth fetch error:", error);
+        }
+      } else if (event.data?.type === 'AUTH_ERROR') {
+        console.error("Auth Error:", event.data.error);
+        alert(`Authentication failed: ${event.data.error}`);
+      }
+    };
+
+    window.addEventListener("message", handleMessage);
+    return () => window.removeEventListener("message", handleMessage);
+  }, [navigate, setAuth]);
+
+  const openPopup = (provider: 'google' | 'github') => {
+    const width = 500;
+    const height = 600;
+    const left = window.screenX + (window.outerWidth - width) / 2;
+    const top = window.screenY + (window.outerHeight - height) / 2;
+    const url = provider === 'github' ? `${API_URL}/api/auth/github/user` : `${API_URL}/api/auth/${provider}`;
+    window.open(url, "OAuth", `width=${width},height=${height},left=${left},top=${top}`);
+  };
 
   return (
     <div className="min-h-screen w-full bg-[hsl(var(--background))] text-[hsl(var(--foreground))] relative overflow-hidden">
@@ -70,7 +111,7 @@ export default function SignIn() {
               <motion.button
                 whileHover={{ y: -1 }}
                 whileTap={{ scale: 0.98 }}
-                onClick={() => navigate("/dashboard")}
+                onClick={() => openPopup('google')}
                 className="group inline-flex items-center justify-center gap-3 h-12 px-5 rounded-lg bg-white text-gray-900 font-semibold text-sm hover:bg-gray-50 transition-all shadow-[0_0_0_1px_rgba(255,255,255,0.1)] hover:shadow-[0_0_25px_rgba(255,255,255,0.18)]"
               >
                 <FcGoogle className="w-5 h-5" />
@@ -80,7 +121,7 @@ export default function SignIn() {
               <motion.button
                 whileHover={{ y: -1 }}
                 whileTap={{ scale: 0.98 }}
-                onClick={() => navigate("/dashboard")}
+                onClick={() => openPopup('github')}
                 className="group inline-flex items-center justify-center gap-3 h-12 px-5 rounded-lg bg-[hsl(var(--muted))]/40 border border-[hsl(var(--border))] text-white font-semibold text-sm hover:border-[hsl(var(--primary))]/50 hover:bg-[hsl(var(--muted))]/60 hover:shadow-[0_0_25px_rgba(0,229,255,0.15)] transition-all"
               >
                 <Github className="w-5 h-5" />

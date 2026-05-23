@@ -3,6 +3,26 @@ const cors = require('cors');
 const path = require('path');
 const fs = require('fs');
 const { spawn, execSync } = require('child_process');
+require('dotenv').config({ path: path.resolve(__dirname, '.env') });
+const { Pool } = require('pg');
+const jwt = require('jsonwebtoken');
+
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL || 'postgresql://zenith:zenith_password_123@127.0.0.1:5432/zenith_db'
+});
+
+pool.query(`
+  CREATE TABLE IF NOT EXISTS users (
+    id VARCHAR(36) PRIMARY KEY,
+    email VARCHAR(255) NOT NULL UNIQUE,
+    name TEXT,
+    avatar_url TEXT,
+    provider VARCHAR(50) NOT NULL,
+    provider_id VARCHAR(255) NOT NULL UNIQUE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+  )
+`).catch(console.error);
+
 
 const app = express();
 const PUBLIC_IP = '13.233.87.37';
@@ -1010,4 +1030,201 @@ app.delete('/api/databases/:name', (req, res) => {
   saveDatabases(dbs);
   res.json({ success: true });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// USER AUTHENTICATION (Google, GitHub)
+// ─────────────────────────────────────────────────────────────────────────────
+const JWT_SECRET = process.env.JWT_SECRET || "super_secret_jwt_key_12345";
+const API_URL = process.env.API_URL || "http://13.233.87.37:5000";
+const FRONTEND_URL = process.env.FRONTEND_URL || "http://localhost:5174";
+
+// Google
+const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || "";
+const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET || "";
+const GOOGLE_REDIRECT_URI = `${API_URL}/api/auth/google/callback`;
+
+// GitHub
+const GITHUB_AUTH_CLIENT_ID = process.env.GITHUB_CLIENT_ID || "";
+const GITHUB_AUTH_CLIENT_SECRET = process.env.GITHUB_CLIENT_SECRET || "";
+const GITHUB_AUTH_REDIRECT_URI = `${API_URL}/api/auth/github/user/callback`;
+
+const generateToken = (userId) => {
+  return jwt.sign({ userId }, JWT_SECRET, { expiresIn: "7d" });
+};
+
+const sendPopupResponse = (res, token) => {
+  res.send(`
+    <html>
+      <body>
+        <script>
+          window.opener.postMessage({ type: 'AUTH_SUCCESS', token: '${token}' }, '*');
+          window.close();
+        </script>
+      </body>
+    </html>
+  `);
+};
+
+const sendPopupError = (res, errorMsg) => {
+  res.send(`
+    <html>
+      <body>
+        <script>
+          window.opener.postMessage({ type: 'AUTH_ERROR', error: '${errorMsg}' }, '*');
+          window.close();
+        </script>
+      </body>
+    </html>
+  `);
+};
+
+// =======================
+// GOOGLE OAUTH
+// =======================
+app.get("/api/auth/google", (req, res) => {
+  const url = `https://accounts.google.com/o/oauth2/v2/auth?client_id=${GOOGLE_CLIENT_ID}&redirect_uri=${GOOGLE_REDIRECT_URI}&response_type=code&scope=email profile`;
+  res.redirect(url);
+});
+
+app.get("/api/auth/google/callback", async (req, res) => {
+  const { code } = req.query;
+  if (!code) return sendPopupError(res, "No code provided");
+
+  try {
+    const tokenResponse = await fetch("https://oauth2.googleapis.com/token", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        code: code,
+        client_id: GOOGLE_CLIENT_ID,
+        client_secret: GOOGLE_CLIENT_SECRET,
+        redirect_uri: GOOGLE_REDIRECT_URI,
+        grant_type: "authorization_code",
+      }),
+    });
+    const tokenData = await tokenResponse.json();
+    if (!tokenData.access_token) return sendPopupError(res, "Failed to get access token");
+
+    const userResponse = await fetch("https://www.googleapis.com/oauth2/v2/userinfo", {
+      headers: { Authorization: `Bearer ${tokenData.access_token}` },
+    });
+    const userData = await userResponse.json();
+
+    const { id, email, name, picture } = userData;
+
+    const { rows } = await pool.query('SELECT id FROM users WHERE provider_id = $1 LIMIT 1', [id]);
+    let userId;
+    
+    if (rows.length === 0) {
+      userId = crypto.randomUUID();
+      await pool.query(
+        'INSERT INTO users (id, email, name, avatar_url, provider, provider_id) VALUES ($1, $2, $3, $4, $5, $6)',
+        [userId, email, name, picture, "google", id]
+      );
+    } else {
+      userId = rows[0].id;
+    }
+
+    const token = generateToken(userId);
+    sendPopupResponse(res, token);
+  } catch (error) {
+    console.error("Google Auth Error", error);
+    sendPopupError(res, "Internal Server Error");
+  }
+});
+
+// =======================
+// GITHUB OAUTH (USER LOGIN)
+// =======================
+app.get("/api/auth/github/user", (req, res) => {
+  const url = `https://github.com/login/oauth/authorize?client_id=${GITHUB_AUTH_CLIENT_ID}&redirect_uri=${GITHUB_AUTH_REDIRECT_URI}&scope=user:email`;
+  res.redirect(url);
+});
+
+app.get("/api/auth/github/user/callback", async (req, res) => {
+  const { code } = req.query;
+  if (!code) return sendPopupError(res, "No code provided");
+
+  try {
+    const tokenResponse = await fetch("https://github.com/login/oauth/access_token", {
+      method: "POST",
+      headers: { 
+        "Content-Type": "application/json",
+        "Accept": "application/json"
+      },
+      body: JSON.stringify({
+        client_id: GITHUB_AUTH_CLIENT_ID,
+        client_secret: GITHUB_AUTH_CLIENT_SECRET,
+        code,
+      }),
+    });
+    const tokenData = await tokenResponse.json();
+    if (!tokenData.access_token) return sendPopupError(res, "Failed to get access token");
+
+    const userResponse = await fetch("https://api.github.com/user", {
+      headers: { 
+        Authorization: `Bearer ${tokenData.access_token}`,
+        "Accept": "application/json"
+      },
+    });
+    const userData = await userResponse.json();
+
+    let email = userData.email;
+    if (!email) {
+      const emailsResponse = await fetch("https://api.github.com/user/emails", {
+        headers: { 
+          Authorization: `Bearer ${tokenData.access_token}`,
+          "Accept": "application/json"
+        },
+      });
+      const emails = await emailsResponse.json();
+      email = emails.find((e) => e.primary)?.email || emails[0]?.email;
+    }
+
+    const { id, name, avatar_url } = userData;
+
+    const { rows } = await pool.query('SELECT id FROM users WHERE provider_id = $1 LIMIT 1', [id.toString()]);
+    let userId;
+    
+    if (rows.length === 0) {
+      userId = crypto.randomUUID();
+      await pool.query(
+        'INSERT INTO users (id, email, name, avatar_url, provider, provider_id) VALUES ($1, $2, $3, $4, $5, $6)',
+        [userId, email, name || email.split("@")[0], avatar_url, "github", id.toString()]
+      );
+    } else {
+      userId = rows[0].id;
+    }
+
+    const token = generateToken(userId);
+    sendPopupResponse(res, token);
+  } catch (error) {
+    console.error("Github Auth Error", error);
+    sendPopupError(res, "Internal Server Error");
+  }
+});
+
+// =======================
+// GET CURRENT USER
+// =======================
+app.get("/api/auth/me", async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith("Bearer ")) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+    const token = authHeader.split(" ")[1];
+    const decoded = jwt.verify(token, JWT_SECRET);
+    
+    const { rows } = await pool.query('SELECT * FROM users WHERE id = $1 LIMIT 1', [decoded.userId]);
+    if (rows.length === 0) {
+      return res.status(404).json({ error: "User not found" });
+    }
+    res.json(rows[0]);
+  } catch (error) {
+    console.error("Auth Me Error", error);
+    res.status(401).json({ error: "Invalid token" });
+  }
+});
+
 
