@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useAuth } from "@/hooks/useAuth";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   SlidersHorizontal,
@@ -14,6 +15,7 @@ import {
   ChevronDown,
   ChevronRight,
   Rocket,
+  Shield,
 } from "lucide-react";
 import { useLocation } from "wouter";
 import { AppShell } from "@/components/AppShell";
@@ -259,6 +261,8 @@ export default function EnvVarsPage() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const { user } = useAuth();
+  const isViewer = user?.workspaceRole === "Viewer";
 
   async function load(showSpinner = false) {
     if (showSpinner) setRefreshing(true);
@@ -295,6 +299,14 @@ export default function EnvVarsPage() {
           <div className="flex items-center justify-center py-24 gap-2 text-slate-400">
             <Loader2 className="w-5 h-5 animate-spin" />
             <span className="text-sm">Loading projects…</span>
+          </div>
+        ) : isViewer ? (
+          <div className="flex flex-col items-center justify-center py-24 text-center">
+            <div className="w-12 h-12 rounded-full bg-amber-50 border border-amber-100 flex items-center justify-center mb-4">
+              <Shield className="w-5 h-5 text-amber-600" />
+            </div>
+            <h3 className="text-base font-semibold text-slate-900 mb-1">Access Restricted</h3>
+            <p className="text-sm text-slate-500">Viewer roles cannot view or manage environment variables.</p>
           </div>
         ) : projects.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-24 text-center">

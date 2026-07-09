@@ -33,10 +33,12 @@ import {
   Radio,
   WifiOff,
   Download,
+  Moon,
+  Github,
 } from "lucide-react";
-import { getProjects, fetchProjectsFromServer, formatRelativeTime, deleteProjectFromServer, type Project } from "@/lib/projects";
+import { getProjects, fetchProjectsFromServer, formatRelativeTime, deleteProjectFromServer, getAuthToken, addCustomDomainToServer, removeCustomDomainFromServer, checkCustomDomainStatusFromServer, checkDnsStatusFromServer, type Project } from "@/lib/projects";
 import { AppShell } from "@/components/AppShell";
-import { normalizeUrlForDisplay, getWebhookInfo, getEnvVars, saveEnvVars, deleteEnvVar, type WebhookInfo, type EnvVars } from "@/lib/deploy";
+import { normalizeUrlForDisplay, getWebhookInfo, getWebhookPingStatus, getEnvVars, saveEnvVars, deleteEnvVar, type WebhookInfo, type EnvVars } from "@/lib/deploy";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Tab configuration
@@ -102,16 +104,52 @@ export default function ProjectDetail() {
   const [activeTab, setActiveTab] = useState<TabId>("overview");
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState<"start" | "stop" | "restart" | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [screenshotLoaded, setScreenshotLoaded] = useState(false);
+  const [screenshotError, setScreenshotError] = useState(false);
+  const [currentUserRole, setCurrentUserRole] = useState("Owner");
+
+  useEffect(() => {
+    setScreenshotLoaded(false);
+    setScreenshotError(false);
+  }, [projectName]);
+
+  useEffect(() => {
+    async function loadRole() {
+      try {
+        const workspaceId = localStorage.getItem("cloudrik-workspace");
+        const token = getAuthToken();
+        let url = "/api-proxy/api/auth/me";
+        if (workspaceId) url += `?workspaceId=${workspaceId}`;
+        const res = await fetch(url, {
+          headers: token ? { Authorization: `Bearer ${token}` } : {}
+        });
+        if (res.ok) {
+          const data = await res.json();
+          setCurrentUserRole(data.workspaceRole || "Owner");
+        }
+      } catch (err) {}
+    }
+    loadRole();
+  }, []);
 
   const handleAction = async (action: "start" | "stop" | "restart") => {
     setActionLoading(action);
     try {
-      const res = await fetch(`/api-proxy/projects/${encodeURIComponent(projectName)}/${action}`, {
-        method: "POST"
+      const token = getAuthToken();
+      const workspaceId = localStorage.getItem("cloudrik-workspace");
+      let url = `/api-proxy/projects/${encodeURIComponent(projectName)}/${action}`;
+      if (workspaceId) url += `?workspaceId=${workspaceId}`;
+
+      const res = await fetch(url, {
+        method: "POST",
+        headers: token ? { "Authorization": `Bearer ${token}` } : {},
       });
       if (res.ok) {
         const data = await res.json() as { status: string };
-        const mappedStatus = data.status === "running" ? "live" : data.status === "stopped" ? "stopped" : "failed";
+        const mappedStatus = data.status === "running" || data.status === "already_running" ? "live" 
+          : data.status === "stopped" ? "stopped" 
+          : "failed";
 
         // Update local state
         setProject(prev => prev ? { ...prev, status: mappedStatus } : null);
@@ -132,28 +170,27 @@ export default function ProjectDetail() {
   };
 
   useEffect(() => {
-    // Try localStorage first (instant), then fallback to server fetch
+    // Try localStorage first for instant load
     const fromCache = getProjects().find((p) => p.name === projectName) ?? null;
-    setProject(fromCache);
-
     if (fromCache) {
+      setProject(fromCache);
       setLoading(false);
-    } else {
-      fetchProjectsFromServer().then((data) => {
-        const found = data.find((p) => p.name === projectName) ?? null;
-        setProject(found);
-        setLoading(false);
-        // Also persist to localStorage so next visit is instant
-        if (found) {
-          const saved = getProjects();
-          if (!saved.find((p) => p.name === projectName)) {
-            localStorage.setItem("zenith.projects", JSON.stringify([found, ...saved]));
-          }
-        }
-      }).catch(() => {
-        setLoading(false);
-      });
     }
+
+    // Always fetch from server in background to get the fresh database values
+    fetchProjectsFromServer().then((data) => {
+      const found = data.find((p) => p.name === projectName) ?? null;
+      if (found) {
+        setProject(found);
+        // Persist fresh data to local storage cache
+        const saved = getProjects();
+        const filtered = saved.filter((p) => p.name !== projectName);
+        localStorage.setItem("zenith.projects", JSON.stringify([found, ...filtered]));
+      }
+      setLoading(false);
+    }).catch(() => {
+      setLoading(false);
+    });
 
     const refresh = () => {
       const found = getProjects().find((p) => p.name === projectName) ?? null;
@@ -199,6 +236,10 @@ export default function ProjectDetail() {
     );
   }
 
+  const primaryDisplayDomain = project.customDomain || project.domain;
+
+
+
   return (
     <AppShell activeNav="Projects">
       <div className="max-w-6xl mx-auto px-6 py-6">
@@ -218,42 +259,115 @@ export default function ProjectDetail() {
           transition={{ duration: 0.4 }}
           className="mb-6"
         >
-          <div className="flex items-start justify-between gap-4 mb-4">
-            <div className="min-w-0">
-              <div className="flex items-center gap-2.5 mb-3">
-                <StatusDot status={project.status} />
-                <h1 className="font-semibold text-slate-900 text-lg truncate">{project.name}</h1>
-                <StatusBadge status={project.status} />
-              </div>
-
-              <div className="space-y-2">
-                <div className="flex items-center gap-2 text-sm text-slate-500">
-                  <Globe className="w-4 h-4 text-slate-400 shrink-0" />
-                  <a
-                    href={normalizeUrlForDisplay(project.domain)}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="hover:text-sky-600 transition-colors font-mono"
-                  >
-                    {project.domain}
-                  </a>
-                  <ExternalLink className="w-3 h-3 text-slate-300" />
-                </div>
-                <div className="flex items-center gap-2 text-sm text-slate-500">
-                  <Clock className="w-4 h-4 text-slate-400 shrink-0" />
-                  <span>
-                    Last Deploy:{" "}
-                    <span className="text-slate-700 font-medium">{formatRelativeTime(project.deployedAt)}</span>
-                  </span>
-                </div>
-              </div>
-            </div>
-
-            {/* Right side action buttons — horizontal */}
-            <div className="flex items-center gap-2 shrink-0">
-              {/* Lifecycle controls */}
+          <div className="flex flex-col sm:flex-row items-start gap-6 mb-6">
+            
+            {/* Left: Website Preview Card */}
+            <a 
+              href={normalizeUrlForDisplay(primaryDisplayDomain)}
+              target="_blank"
+              rel="noreferrer"
+              className="group relative w-full sm:w-[384px] h-[216px] shrink-0 rounded-xl border border-slate-200 bg-slate-50 overflow-hidden block shadow-sm"
+            >
               {project.status === "live" || project.status === "running" ? (
                 <>
+                  <div className="absolute inset-0 z-10 overflow-hidden rounded-xl">
+                    <iframe
+                      src={`https://${normalizeUrlForDisplay(primaryDisplayDomain)}`}
+                      title="Project Preview"
+                      className="w-full h-full border-none pointer-events-none"
+                      scrolling="no"
+                    />
+                  </div>
+                  {/* Premium Skeleton/Loader state */}
+                  {!screenshotLoaded && (
+                    <div className="absolute inset-0 flex flex-col items-center justify-center p-4 bg-slate-50 z-20">
+                      <div className="flex items-center gap-2 mb-2">
+                        <Loader2 className="w-4 h-4 text-indigo-500 animate-spin" />
+                        <span className="text-xs font-semibold text-slate-500 tracking-wider">Generating Preview...</span>
+                      </div>
+                      <div className="text-[10px] text-slate-400 font-mono">{primaryDisplayDomain}</div>
+                    </div>
+                  )}
+                  {/* Fallback card under the image */}
+                  <div className="absolute inset-0 flex flex-col items-center justify-center p-4 bg-gradient-to-br from-slate-50 to-slate-100/50 z-0">
+                    <Globe className="w-8 h-8 text-slate-300 mb-2 opacity-50" />
+                    <div className="text-xs font-bold text-slate-500 uppercase tracking-wider">{project.name}</div>
+                    <div className="text-[10px] text-slate-400 mt-0.5 font-mono">{primaryDisplayDomain}</div>
+                  </div>
+                </>
+              ) : (
+                /* Stopped App State Placeholder */
+                <div className="absolute inset-0 flex flex-col items-center justify-center p-4 bg-slate-50">
+                  <Globe className="w-8 h-8 text-slate-300 mb-2 opacity-50" />
+                  <div className="text-xs font-bold text-slate-500 uppercase tracking-wider">Application Offline</div>
+                  <div className="text-[10px] text-slate-400 mt-0.5 font-mono">{primaryDisplayDomain}</div>
+                </div>
+              )}
+
+              {/* Hover shade */}
+              <div className="absolute inset-0 bg-slate-900/0 group-hover:bg-slate-900/[0.04] transition-colors flex items-center justify-center z-30">
+                 <ExternalLink className="w-5 h-5 text-slate-900 opacity-0 group-hover:opacity-100 transition-opacity drop-shadow-sm" />
+              </div>
+            </a>
+
+            {/* Right: Project Details & Actions */}
+            <div className="flex-1 min-w-0 w-full flex flex-col md:flex-row md:items-start justify-between gap-6">
+              
+              <div className="min-w-0 flex-1">
+                <h1 className="text-xl font-semibold text-black tracking-tight mb-2.5">
+                  {project.name}
+                </h1>
+
+                {/* Domain & Link */}
+                <div className="flex items-center gap-2 mb-3.5">
+                  <span className="flex items-center justify-center w-5 h-5 rounded-full bg-emerald-100/70 shrink-0">
+                    <span className="w-2.5 h-2.5 rounded-full bg-emerald-600"></span>
+                  </span>
+                  <a
+                    href={normalizeUrlForDisplay(primaryDisplayDomain)}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="font-semibold text-emerald-700 hover:text-emerald-800 hover:underline transition-colors text-sm break-all flex items-center gap-1"
+                  >
+                    {primaryDisplayDomain}
+                    <ExternalLink className="w-3.5 h-3.5 text-emerald-600/70 inline" />
+                  </a>
+                </div>
+
+                {/* Meta details list in Netlify Sentence Style */}
+                <div className="space-y-1.5 text-sm text-slate-900">
+                  <p>
+                    Deploys from <span className="font-semibold text-black">{project.repo ? "GitHub" : "File Upload"}</span>.
+                  </p>
+
+                  {project.repo && (
+                    <p className="flex items-center gap-1">
+                      Repository is{" "}
+                      <a 
+                        href={project.repo.startsWith("http") ? project.repo : `https://github.com/${project.repo}`}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="inline-flex items-center gap-1 font-semibold text-indigo-600 hover:text-indigo-700 hover:underline transition-colors"
+                      >
+                        <Github className="w-4 h-4 text-slate-600 inline" />
+                        {project.repo.replace(/^(https?:\/\/)?(www\.)?github\.com\//, "").replace(/\/$/, "")}
+                      </a>.
+                    </p>
+                  )}
+
+                  <p>
+                    Status is <span className="font-semibold text-black">{project.status === "live" || project.status === "running" ? "active" : "offline"}</span>.
+                  </p>
+
+                  <p>
+                    Last update <span className="font-semibold text-black">{formatRelativeTime(project.deployedAt || project.updatedAt)}</span>.
+                  </p>
+                </div>
+              </div>
+
+              {/* Right side action buttons */}
+              <div className="flex flex-wrap items-center gap-2 shrink-0">
+                {currentUserRole !== "Viewer" && (project.status === "live" || project.status === "running" ? (
                   <button
                     disabled={actionLoading !== null}
                     onClick={() => handleAction("stop")}
@@ -266,44 +380,30 @@ export default function ProjectDetail() {
                     )}
                     Stop App
                   </button>
+                ) : project.status === "stopped" ? (
                   <button
                     disabled={actionLoading !== null}
-                    onClick={() => handleAction("restart")}
-                    className="inline-flex items-center justify-center w-9 h-9 rounded-lg bg-white border border-slate-200 text-slate-500 hover:bg-slate-50 disabled:opacity-50 transition-colors"
-                    title="Restart Application"
+                    onClick={() => handleAction("start")}
+                    className="inline-flex items-center gap-1.5 h-9 px-3.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-semibold shadow-[0_0_8px_rgba(16,185,129,0.3)] disabled:opacity-50 transition-colors"
                   >
-                    <RefreshCw className={`w-4 h-4 ${actionLoading === "restart" ? "animate-spin text-sky-600" : ""}`} />
+                    {actionLoading === "start" ? (
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                    ) : (
+                      <Rocket className="w-4 h-4" />
+                    )}
+                    Start App
                   </button>
-                </>
-              ) : project.status === "stopped" ? (
-                <button
-                  disabled={actionLoading !== null}
-                  onClick={() => handleAction("start")}
-                  className="inline-flex items-center gap-1.5 h-9 px-3.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-semibold shadow-[0_0_8px_rgba(16,185,129,0.3)] disabled:opacity-50 transition-colors"
-                >
-                  {actionLoading === "start" ? (
-                    <Loader2 className="w-4 h-4 animate-spin" />
-                  ) : (
-                    <Rocket className="w-4 h-4" />
-                  )}
-                  Start App
-                </button>
-              ) : null}
+                ) : null)}
 
-              <a
-                href={normalizeUrlForDisplay(project.domain)}
-                target="_blank"
-                rel="noreferrer"
-                className="inline-flex items-center gap-1.5 h-9 px-3.5 rounded-lg bg-white border border-slate-200 text-sm font-medium text-slate-700 hover:bg-slate-50 transition-colors"
-              >
-                <ExternalLink className="w-4 h-4" /> Visit Site
-              </a>
-              <button
-                onClick={() => setActiveTab("settings")}
-                className="inline-flex items-center gap-1.5 h-9 px-3.5 rounded-lg bg-white border border-slate-200 text-sm font-medium text-slate-700 hover:bg-slate-50 transition-colors"
-              >
-                <SettingsIcon className="w-4 h-4" /> Settings
-              </button>
+                <a
+                  href={normalizeUrlForDisplay(primaryDisplayDomain)}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex items-center gap-1.5 h-9 px-3.5 rounded-lg bg-white border border-slate-200 text-sm font-medium text-slate-700 hover:bg-slate-50 transition-colors"
+                >
+                  <ExternalLink className="w-4 h-4" /> Visit Site
+                </a>
+              </div>
             </div>
           </div>
         </motion.div>
@@ -347,8 +447,19 @@ export default function ProjectDetail() {
             {activeTab === "overview" && <OverviewTab project={project} setActiveTab={setActiveTab} />}
             {activeTab === "deployments" && <DeploymentsTab project={project} />}
             {activeTab === "logs" && <LogsTab project={project} />}
-            {activeTab === "domains" && <DomainsTab project={project} />}
-            {activeTab === "settings" && <SettingsTab project={project} />}
+            {activeTab === "domains" && <DomainsTab project={project} refreshProject={() => {
+              fetchProjectsFromServer().then((data) => {
+                const found = data.find((p) => p.name === project.name);
+                if (found) {
+                  const saved = getProjects().filter(p => p.name !== project.name);
+                  localStorage.setItem("zenith.projects", JSON.stringify([found, ...saved]));
+                  // Dispatch storage event so setProject updates via existing listener if needed, 
+                  // but we should just update it via a new state update or window event.
+                  window.dispatchEvent(new Event("focus")); 
+                }
+              });
+            }} />}
+            {activeTab === "settings" && <SettingsTab project={project} currentUserRole={currentUserRole} />}
           </motion.div>
         </AnimatePresence>
       </div>
@@ -372,11 +483,23 @@ function OverviewTab({ project, setActiveTab }: { project: Project; setActiveTab
   useEffect(() => {
     let active = true;
     const fetchStats = () => {
-      fetch(`/api-proxy/api/projects/${encodeURIComponent(project.name)}/stats`)
-        .then(res => res.json())
+      const token = getAuthToken();
+      const workspaceId = localStorage.getItem("cloudrik-workspace");
+      let url = `/api-proxy/api/projects/${encodeURIComponent(project.name)}/stats`;
+      if (workspaceId) url += `?workspaceId=${workspaceId}`;
+
+      fetch(url, {
+        headers: token ? { "Authorization": `Bearer ${token}` } : {}
+      })
+        .then(res => {
+          if (!res.ok) throw new Error("Server error fetching stats");
+          return res.json();
+        })
         .then(data => {
-          if (active) {
+          if (active && data && !data.error) {
             setStats({ ...data, loading: false });
+          } else if (active) {
+            setStats(s => ({ ...s, loading: false, online: false }));
           }
         })
         .catch(err => {
@@ -396,8 +519,8 @@ function OverviewTab({ project, setActiveTab }: { project: Project; setActiveTab
     };
   }, [project.name]);
 
-  const cpuVal = parseFloat(stats.cpu.replace('%', '')) || 0;
-  const memVal = parseFloat(stats.memPerc.replace('%', '')) || 0;
+  const cpuVal = (stats.cpu && typeof stats.cpu === "string") ? parseFloat(stats.cpu.replace('%', '')) || 0 : 0;
+  const memVal = (stats.memPerc && typeof stats.memPerc === "string") ? parseFloat(stats.memPerc.replace('%', '')) || 0 : 0;
 
   return (
     <div className="space-y-6">
@@ -583,7 +706,7 @@ type DeploymentRow = {
   commit: string;
   message: string;
   branch: string;
-  status: "live" | "building" | "failed";
+  status: "live" | "building" | "failed" | "stopped";
   duration: string;
   ts: number;
   author: string;
@@ -721,10 +844,10 @@ type RealLogLine = { id: number; text: string; color: string };
 
 function colorForLine(text: string): string {
   const l = text.toLowerCase();
-  if (/error|exception|fatal|crash|panic/.test(l)) return "text-red-400";
-  if (/warn|warning|deprecated/.test(l)) return "text-amber-400";
-  if (/info|started|ready|listening|connected|success|running/.test(l)) return "text-emerald-400";
-  return "text-slate-300";
+  if (/error|exception|fatal|crash|panic/.test(l)) return "text-red-500 font-medium";
+  if (/warn|warning|deprecated/.test(l)) return "text-amber-500";
+  if (/info|started|ready|listening|connected|success|running/.test(l)) return "text-emerald-500";
+  return "text-slate-700";
 }
 
 function makeRealLine(text: string): RealLogLine {
@@ -751,8 +874,14 @@ function LogsTab({ project }: { project: Project }) {
   const fetchSnapshot = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await fetch(`${LOGS_API}/${encodeURIComponent(project.name)}/logs?lines=${lineCount}`, {
+      const token = getAuthToken();
+      const workspaceId = localStorage.getItem("cloudrik-workspace");
+      let url = `${LOGS_API}/${encodeURIComponent(project.name)}/logs?lines=${lineCount}`;
+      if (workspaceId) url += `&workspaceId=${workspaceId}`;
+
+      const res = await fetch(url, {
         signal: AbortSignal.timeout(8000),
+        headers: token ? { "Authorization": `Bearer ${token}` } : {}
       });
       if (!res.ok) return;
       const data = await res.json() as { logs: string[] };
@@ -775,9 +904,12 @@ function LogsTab({ project }: { project: Project }) {
     setConnected(false);
     setStreaming(true);
 
-    const es = new EventSource(
-      `${LOGS_API}/${encodeURIComponent(project.name)}/logs/stream?tail=80`
-    );
+    const token = getAuthToken();
+    const workspaceId = localStorage.getItem("cloudrik-workspace");
+    let streamUrl = `${LOGS_API}/${encodeURIComponent(project.name)}/logs/stream?tail=80&token=${token || ""}`;
+    if (workspaceId) streamUrl += `&workspaceId=${workspaceId}`;
+
+    const es = new EventSource(streamUrl);
     esRef.current = es;
     es.onopen = () => setConnected(true);
     es.onmessage = (e) => {
@@ -928,41 +1060,41 @@ function LogsTab({ project }: { project: Project }) {
         </div>
 
         {/* Terminal */}
-        <div className="bg-slate-950 rounded-xl overflow-hidden border border-slate-800">
-          <div className="flex items-center gap-1.5 px-3 py-2 border-b border-slate-800 bg-slate-900 shrink-0">
-            <span className="w-2.5 h-2.5 rounded-full bg-red-500/80" />
-            <span className="w-2.5 h-2.5 rounded-full bg-amber-400/80" />
-            <span className="w-2.5 h-2.5 rounded-full bg-emerald-500/80" />
-            <span className="ml-2 text-[11px] font-mono text-slate-400">{project.name} — logs</span>
+        <div className="bg-white rounded-xl overflow-hidden border border-slate-200 shadow-sm">
+          <div className="flex items-center gap-1.5 px-3 py-2 border-b border-slate-100 bg-slate-50 shrink-0">
+            <span className="w-2.5 h-2.5 rounded-full bg-red-400" />
+            <span className="w-2.5 h-2.5 rounded-full bg-amber-400" />
+            <span className="w-2.5 h-2.5 rounded-full bg-emerald-400" />
+            <span className="ml-2 text-[11px] font-mono text-slate-500">{project.name} — logs</span>
             {streaming && connected && (
-              <span className="ml-auto inline-flex items-center gap-1 text-[10px] font-mono text-emerald-400">
-                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping" />LIVE
+              <span className="ml-auto inline-flex items-center gap-1 text-[10px] font-mono text-emerald-600">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-ping" />LIVE
               </span>
             )}
-            {loading && <Loader2 className="w-3.5 h-3.5 animate-spin text-slate-500 ml-auto" />}
+            {loading && <Loader2 className="w-3.5 h-3.5 animate-spin text-slate-400 ml-auto" />}
           </div>
 
           <div className="font-mono text-xs leading-relaxed p-4 h-[420px] overflow-y-auto">
             {/* Loading state */}
             {loading && filtered.length === 0 && (
-              <div className="flex items-center gap-2 text-slate-500 justify-center h-full">
+              <div className="flex items-center gap-2 text-slate-400 justify-center h-full">
                 <Loader2 className="w-4 h-4 animate-spin" /> Loading logs…
               </div>
             )}
             {/* Empty + streaming — waiting */}
             {!loading && filtered.length === 0 && streaming && (
               <div className="flex items-center gap-2 text-slate-500 justify-center h-full">
-                <Radio className="w-4 h-4 animate-pulse text-emerald-400" /> Waiting for new log lines…
+                <Radio className="w-4 h-4 animate-pulse text-emerald-500" /> Waiting for new log lines…
               </div>
             )}
             {/* Empty + not streaming */}
             {!loading && filtered.length === 0 && !streaming && (
-              <div className="flex flex-col items-center justify-center h-full gap-2 text-slate-600">
+              <div className="flex flex-col items-center justify-center h-full gap-2 text-slate-500">
                 <AlertTriangle className="w-6 h-6 opacity-30" />
                 <p>No logs — container may be idle or filter matches nothing</p>
                 <button
                   onClick={handleToggleLive}
-                  className="mt-1 inline-flex items-center gap-1.5 h-8 px-3 rounded-lg bg-slate-800 text-white text-xs font-medium hover:bg-slate-700 transition-colors"
+                  className="mt-1 inline-flex items-center gap-1.5 h-8 px-3 rounded-lg bg-slate-100 text-slate-700 border border-slate-200 text-xs font-medium hover:bg-slate-200 transition-colors"
                 >
                   <Radio className="w-3 h-3" /> Start Live Stream
                 </button>
@@ -970,8 +1102,8 @@ function LogsTab({ project }: { project: Project }) {
             )}
 
             {filtered.map((line, i) => (
-              <div key={line.id} className={`flex gap-2 ${line.color} hover:bg-white/5 rounded px-1 -mx-1 py-0.5 group`}>
-                <span className="text-slate-700 shrink-0 select-none w-7 text-right group-hover:text-slate-500">{i + 1}</span>
+              <div key={line.id} className={`flex gap-2 ${line.color} hover:bg-slate-50 rounded px-1 -mx-1 py-0.5 group transition-colors`}>
+                <span className="text-slate-300 shrink-0 select-none w-7 text-right group-hover:text-slate-400">{i + 1}</span>
                 <span className="break-all whitespace-pre-wrap">{line.text}</span>
               </div>
             ))}
@@ -994,7 +1126,19 @@ type CustomDomain = {
   step: "dns-setup" | "verifying" | "active";
 };
 const CUSTOM_DOMAINS_KEY = (projectId: string) => `zenith.domains.project.${projectId}`;
-const SERVER_IP = "13.233.87.37";
+const SERVER_IP = "3.109.177.105";
+const CNAME_TARGET = "cname.cloudrik.com";
+
+function isSubdomain(domain: string): boolean {
+  const parts = domain.split(".");
+  return parts.length > 2;
+}
+
+function getSubdomainName(domain: string): string {
+  const parts = domain.split(".");
+  if (parts.length <= 2) return "@";
+  return parts.slice(0, parts.length - 2).join(".");
+}
 
 function CopyBtn({ value }: { value: string }) {
   const [copied, setCopied] = useState(false);
@@ -1010,21 +1154,19 @@ function CopyBtn({ value }: { value: string }) {
   );
 }
 
-function DnsSetupPanel({ domain, onVerified }: { domain: CustomDomain; onVerified: () => void }) {
+function DnsSetupPanel({ domain, projectName, onVerified }: { domain: CustomDomain; projectName: string; onVerified: () => void }) {
   const [checking, setChecking] = useState(false);
-  const [provider, setProvider] = useState<"cloudflare" | "namecheap" | "others">("cloudflare");
+  const [dnsState, setDnsState] = useState<{ root: boolean | null, www: boolean | null }>({ root: null, www: null });
 
   const checkDns = async () => {
     setChecking(true);
-    await new Promise((r) => setTimeout(r, 2200));
+    const result = await checkDnsStatusFromServer(projectName);
+    setDnsState({ root: result.rootVerified, www: result.wwwVerified });
     setChecking(false);
-    onVerified();
-  };
-
-  const providerTips: Record<string, string> = {
-    cloudflare: "DNS → Add record → Type: A, Name: @, IPv4: " + SERVER_IP + ". For www: Type CNAME, Name: www, Target: " + domain.host,
-    namecheap: "Advanced DNS → Add New Record → A Record, Host: @, Value: " + SERVER_IP + ". CNAME Record, Host: www, Value: " + domain.host,
-    others: "In your DNS panel, add an A record pointing @ to " + SERVER_IP + " and a CNAME pointing www to " + domain.host,
+    
+    if (result.rootVerified && result.wwwVerified) {
+      onVerified();
+    }
   };
 
   return (
@@ -1040,14 +1182,18 @@ function DnsSetupPanel({ domain, onVerified }: { domain: CustomDomain; onVerifie
           <div className="w-5 h-5 rounded-full bg-sky-100 flex items-center justify-center">
             <Hash className="w-3 h-3 text-sky-600" />
           </div>
-          <span className="text-xs font-semibold text-sky-800">DNS Setup Required</span>
-          <span className="ml-auto text-[10px] text-sky-500">Add these records to your DNS provider</span>
+          <span className="text-xs font-semibold text-sky-800">Mandatory DNS Setup</span>
+          <span className="ml-auto text-[10px] text-sky-500">Add BOTH records to your DNS provider</span>
         </div>
 
-        <div className="p-4 space-y-3">
+        <div className="p-4 space-y-4">
           {/* A Record */}
           <div>
-            <p className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider mb-1.5">A Record (Root Domain)</p>
+            <div className="flex items-center justify-between mb-1.5">
+              <p className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider">1. A Record (Root Domain)</p>
+              {dnsState.root === true && <span className="flex items-center gap-1 text-[10px] font-bold text-emerald-600"><CheckCircle2 className="w-3 h-3"/> Verified</span>}
+              {dnsState.root === false && <span className="flex items-center gap-1 text-[10px] font-bold text-red-500"><XCircle className="w-3 h-3"/> Missing</span>}
+            </div>
             <div className="rounded-lg border border-slate-200 bg-white overflow-hidden">
               <div className="grid grid-cols-3 px-3 py-1.5 bg-slate-50 border-b border-slate-100 text-[10px] font-semibold text-slate-400 uppercase tracking-wider">
                 <span>Type</span><span>Name</span><span>Value</span>
@@ -1055,17 +1201,21 @@ function DnsSetupPanel({ domain, onVerified }: { domain: CustomDomain; onVerifie
               <div className="grid grid-cols-3 px-3 py-2.5 font-mono text-xs text-slate-800">
                 <span className="font-semibold text-sky-600">A</span>
                 <span>@</span>
-                <div className="flex items-center gap-1.5">
-                  <span className="font-semibold">{SERVER_IP}</span>
+                <div className="flex items-center gap-1.5 min-w-0">
+                  <span className="truncate font-semibold">{SERVER_IP}</span>
                   <CopyBtn value={SERVER_IP} />
                 </div>
               </div>
             </div>
           </div>
 
-          {/* CNAME Record for www */}
+          {/* CNAME Record */}
           <div>
-            <p className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider mb-1.5">CNAME Record (www subdomain)</p>
+            <div className="flex items-center justify-between mb-1.5">
+              <p className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider">2. CNAME Record (www)</p>
+              {dnsState.www === true && <span className="flex items-center gap-1 text-[10px] font-bold text-emerald-600"><CheckCircle2 className="w-3 h-3"/> Verified</span>}
+              {dnsState.www === false && <span className="flex items-center gap-1 text-[10px] font-bold text-red-500"><XCircle className="w-3 h-3"/> Missing</span>}
+            </div>
             <div className="rounded-lg border border-slate-200 bg-white overflow-hidden">
               <div className="grid grid-cols-3 px-3 py-1.5 bg-slate-50 border-b border-slate-100 text-[10px] font-semibold text-slate-400 uppercase tracking-wider">
                 <span>Type</span><span>Name</span><span>Value</span>
@@ -1074,37 +1224,19 @@ function DnsSetupPanel({ domain, onVerified }: { domain: CustomDomain; onVerifie
                 <span className="font-semibold text-amber-600">CNAME</span>
                 <span>www</span>
                 <div className="flex items-center gap-1.5 min-w-0">
-                  <span className="truncate font-semibold">{domain.host}</span>
-                  <CopyBtn value={domain.host} />
+                  <span className="truncate font-semibold">{CNAME_TARGET}</span>
+                  <CopyBtn value={CNAME_TARGET} />
                 </div>
               </div>
             </div>
           </div>
 
-          {/* Provider tips */}
-          <div>
-            <p className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider mb-1.5">Quick Guide</p>
-            <div className="flex gap-1 mb-2">
-              {(["cloudflare", "namecheap", "others"] as const).map((p) => (
-                <button
-                  key={p}
-                  onClick={() => setProvider(p)}
-                  className={`h-6 px-2.5 rounded-md text-[11px] font-medium transition-colors capitalize ${provider === p
-                    ? "bg-slate-800 text-white"
-                    : "bg-white border border-slate-200 text-slate-600 hover:bg-slate-50"
-                    }`}
-                >
-                  {p === "others" ? "Others" : p.charAt(0).toUpperCase() + p.slice(1)}
-                </button>
-              ))}
-            </div>
-            <p className="text-xs text-slate-600 leading-relaxed bg-white border border-slate-200 rounded-lg px-3 py-2">
-              {providerTips[provider]}
-            </p>
-          </div>
+          <p className="text-[11px] text-slate-500 bg-white border border-slate-200 rounded-lg px-3 py-2 leading-relaxed">
+            <span className="font-semibold text-slate-700">Quick Guide:</span> In your DNS provider (e.g. BigRock, GoDaddy), add an A record pointing <span className="font-mono bg-slate-100 px-1 rounded">@</span> to <span className="font-mono bg-slate-100 px-1 rounded">{SERVER_IP}</span> AND a CNAME record pointing <span className="font-mono bg-slate-100 px-1 rounded">www</span> to <span className="font-mono bg-slate-100 px-1 rounded">{CNAME_TARGET}</span>.
+          </p>
 
           <p className="text-[11px] text-slate-400 flex items-center gap-1.5">
-            <Clock className="w-3 h-3" /> DNS changes can take up to 24 hours to propagate globally.
+            <Clock className="w-3 h-3" /> DNS changes can take a few minutes to propagate globally.
           </p>
 
           <button
@@ -1113,8 +1245,8 @@ function DnsSetupPanel({ domain, onVerified }: { domain: CustomDomain; onVerifie
             className="w-full h-9 rounded-lg bg-slate-900 text-white text-sm font-medium hover:bg-slate-800 transition-colors flex items-center justify-center gap-2 disabled:opacity-70"
           >
             {checking
-              ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Checking DNS…</>
-              : <><RefreshCw className="w-3.5 h-3.5" /> I've Added the Records — Verify Now</>}
+              ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Verifying both records…</>
+              : <><RefreshCw className="w-3.5 h-3.5" /> Verify Setup</>}
           </button>
         </div>
       </div>
@@ -1122,34 +1254,71 @@ function DnsSetupPanel({ domain, onVerified }: { domain: CustomDomain; onVerifie
   );
 }
 
-function DomainsTab({ project }: { project: Project }) {
-  const [customDomains, setCustomDomains] = useState<CustomDomain[]>([]);
+function DomainsTab({ project, refreshProject }: { project: Project, refreshProject: () => void }) {
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [showGuide, setShowGuide] = useState(true);
+  const [newDomain, setNewDomain] = useState("");
+  const [adding, setAdding] = useState(false);
+  const [error, setError] = useState("");
+
+  const SERVER_IP = "3.109.177.105";
+
+  // Manage verified status
+  const [domainStatus, setDomainStatus] = useState<"none"|"pending"|"active">("none");
 
   useEffect(() => {
-    try {
-      const raw = localStorage.getItem(CUSTOM_DOMAINS_KEY(project.name));
-      const parsed: CustomDomain[] = raw ? JSON.parse(raw) : [];
-      setCustomDomains(parsed.map((d) => ({ ...d, step: "dns-setup" })));
-    } catch {
-      setCustomDomains([]);
+    if (project.customDomain) {
+      checkCustomDomainStatusFromServer(project.name).then(setDomainStatus);
     }
-  }, [project.name]);
+  }, [project.customDomain, project.name]);
 
-  const persist = (next: CustomDomain[]) => {
-    setCustomDomains(next);
-    localStorage.setItem(CUSTOM_DOMAINS_KEY(project.name), JSON.stringify(next));
+  // Create a normalized list to support future multiple domains, 
+  // but for now we map the single customDomain from the project object
+  const customDomains: CustomDomain[] = project.customDomain ? [
+    {
+      id: "cd_1",
+      host: project.customDomain,
+      verified: domainStatus === "active",
+      step: domainStatus === "active" ? "active" : "dns-setup",
+      addedAt: Date.now()
+    }
+  ] : [];
+
+  const handleAddDomain = async () => {
+    if (!newDomain.trim()) return;
+    setAdding(true);
+    setError("");
+    const res = await addCustomDomainToServer(project.name, newDomain.trim());
+    if (res.success) {
+      setNewDomain("");
+      refreshProject();
+    } else {
+      setError(res.error || "Failed to add custom domain");
+    }
+    setAdding(false);
   };
 
-  const removeDomain = (id: string) => {
-    persist(customDomains.filter((d) => d.id !== id));
-    if (expandedId === id) setExpandedId(null);
+  const removeDomain = async (id: string) => {
+    setAdding(true);
+    const success = await removeCustomDomainFromServer(project.name);
+    if (success) {
+      if (expandedId === id) setExpandedId(null);
+      refreshProject();
+    }
+    setAdding(false);
   };
 
-  const markVerified = (id: string) => {
-    persist(customDomains.map((d) => d.id === id ? { ...d, verified: true, step: "active" } : d));
-    setExpandedId(null);
+  const markVerified = async () => {
+    // Actually check status from backend
+    const status = await checkCustomDomainStatusFromServer(project.name);
+    if (status === "active") {
+      setDomainStatus("active");
+      setExpandedId(null);
+    } else {
+      // Still pending
+      alert("Verification failed. The SSL certificate is not ready yet. Ensure DNS A-record points to our server.");
+    }
+    refreshProject();
   };
 
   return (
@@ -1175,7 +1344,15 @@ function DomainsTab({ project }: { project: Project }) {
             <div key={d.id}>
               <div className="flex items-center gap-3 px-5 py-3.5">
                 <Globe className="w-4 h-4 text-slate-400 shrink-0" />
-                <span className="font-mono text-sm text-slate-900 flex-1 truncate">{d.host}</span>
+                <a 
+                  href={`https://www.${d.host.replace(/^www\./, '')}`} 
+                  target="_blank" 
+                  rel="noreferrer" 
+                  className="font-mono text-sm text-slate-900 flex-1 truncate hover:text-sky-600 transition-colors flex items-center gap-1.5"
+                >
+                  www.{d.host.replace(/^www\./, '')}
+                  <ExternalLink className="w-3.5 h-3.5 text-slate-400" />
+                </a>
                 {d.verified ? (
                   <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-50 border border-emerald-200 text-emerald-700 text-[11px] font-medium">
                     <CheckCircle2 className="w-3 h-3" /> Active
@@ -1183,7 +1360,7 @@ function DomainsTab({ project }: { project: Project }) {
                 ) : (
                   <>
                     <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-50 border border-amber-200 text-amber-700 text-[11px] font-medium">
-                      <Clock className="w-3 h-3" /> Pending DNS
+                      <Clock className="w-3 h-3" /> SSL Pending
                     </span>
                     <button
                       onClick={() => setExpandedId(expandedId === d.id ? null : d.id)}
@@ -1196,47 +1373,71 @@ function DomainsTab({ project }: { project: Project }) {
                 )}
                 <button
                   onClick={() => removeDomain(d.id)}
-                  className="w-7 h-7 rounded-md text-slate-400 hover:text-red-500 hover:bg-red-50 flex items-center justify-center transition-colors"
+                  disabled={adding}
+                  className="w-7 h-7 rounded-md text-slate-400 hover:text-red-500 hover:bg-red-50 flex items-center justify-center transition-colors disabled:opacity-50"
                 >
                   <Trash2 className="w-3.5 h-3.5" />
                 </button>
               </div>
               <AnimatePresence>
                 {expandedId === d.id && !d.verified && (
-                  <DnsSetupPanel domain={d} onVerified={() => markVerified(d.id)} />
+                  <DnsSetupPanel domain={d} projectName={project.name} onVerified={markVerified} />
                 )}
               </AnimatePresence>
             </div>
           ))}
 
+          {/* Add Domain Form */}
           {customDomains.length === 0 && (
-            <div className="px-5 py-8 text-center text-sm text-slate-400">
-              No custom domains yet — add one below.
+            <div className="px-5 py-5 border-t border-slate-100 bg-slate-50/50">
+              <label className="block text-xs font-semibold text-slate-700 mb-2">Add Custom Domain</label>
+              <div className="flex items-center gap-3">
+                <input
+                  type="text"
+                  placeholder="www.example.com"
+                  className="flex-1 h-9 px-3 bg-white border border-slate-200 rounded-lg text-sm text-slate-900 placeholder:text-slate-400 focus:outline-none focus:border-sky-500 focus:ring-1 focus:ring-sky-500 font-mono"
+                  value={newDomain}
+                  onChange={(e) => setNewDomain(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && handleAddDomain()}
+                  disabled={adding}
+                />
+                <button
+                  onClick={handleAddDomain}
+                  disabled={adding || !newDomain.trim()}
+                  className="h-9 px-4 rounded-lg bg-slate-900 text-white text-sm font-medium hover:bg-slate-800 transition-colors disabled:opacity-50 flex items-center gap-2"
+                >
+                  {adding ? <Loader2 className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />}
+                  Add Domain
+                </button>
+              </div>
+              {error && <p className="mt-2 text-xs text-red-500">{error}</p>}
             </div>
           )}
         </div>
       </Card>
 
       {/* Actions bar */}
-      {showGuide && (
-        <Card title="Setup guide" icon={Hash}>
-          <div className="grid md:grid-cols-2 gap-4">
-            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-              <div className="text-xs font-semibold text-slate-700 mb-2">Step 1: Add DNS records</div>
-              <div className="space-y-2 text-xs text-slate-600">
-                <div className="flex justify-between gap-3"><span>A record</span><span className="font-mono">{SERVER_IP}</span></div>
-                <div className="flex justify-between gap-3"><span>CNAME www</span><span className="font-mono">{project.domain}</span></div>
+      {showGuide && customDomains.length > 0 && (() => {
+        return (
+          <Card title="Setup guide" icon={Hash}>
+            <div className="grid md:grid-cols-2 gap-4">
+              <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                <div className="text-xs font-semibold text-slate-700 mb-2">Step 1: Add DNS records</div>
+                <div className="space-y-2 text-xs text-slate-600">
+                  <div className="flex justify-between gap-3"><span>A record</span><span className="font-mono">{SERVER_IP}</span></div>
+                  <div className="flex justify-between gap-3"><span>CNAME www</span><span className="font-mono">{CNAME_TARGET}</span></div>
+                </div>
+              </div>
+              <div className="rounded-2xl border border-slate-200 bg-white p-4">
+                <div className="text-xs font-semibold text-slate-700 mb-2">Step 2: Verify</div>
+                <p className="text-xs text-slate-500 leading-relaxed">
+                  Both records must be verified. After DNS is updated, SSL verification will run automatically in the background. Note: this can take a few minutes.
+                </p>
               </div>
             </div>
-            <div className="rounded-2xl border border-slate-200 bg-white p-4">
-              <div className="text-xs font-semibold text-slate-700 mb-2">Step 2: Verify</div>
-              <p className="text-xs text-slate-500 leading-relaxed">
-                After DNS is updated, click Setup DNS on the domain row to mark it active.
-              </p>
-            </div>
-          </div>
-        </Card>
-      )}
+          </Card>
+        );
+      })()}
     </div>
   );
 }
@@ -1244,7 +1445,7 @@ function DomainsTab({ project }: { project: Project }) {
 // ─────────────────────────────────────────────────────────────────────────────
 // SETTINGS TAB
 // ─────────────────────────────────────────────────────────────────────────────
-function SettingsTab({ project }: { project: Project }) {
+function SettingsTab({ project, currentUserRole }: { project: Project, currentUserRole: string }) {
   return (
     <div className="space-y-6">
       <Card title="General" icon={SettingsIcon}>
@@ -1268,26 +1469,28 @@ function SettingsTab({ project }: { project: Project }) {
         </div>
       </Card>
 
-      <EnvVarsCard project={project} />
+      <EnvVarsCard project={project} currentUserRole={currentUserRole} />
 
-      <WebhookBannerCard project={project} />
+      <WebhookBannerCard project={project} currentUserRole={currentUserRole} />
 
-      <Card title="Danger Zone" icon={AlertTriangle}>
-        <div className="flex items-center justify-between p-4 rounded-lg border border-red-200 bg-red-50/50">
-          <div>
-            <h3 className="text-sm font-semibold text-slate-900 mb-0.5">Delete this project</h3>
-            <p className="text-xs text-slate-500">
-              Open a confirmation page before permanently removing <span className="font-mono">{project.name}</span>.
-            </p>
+      {currentUserRole !== "Viewer" && (
+        <Card title="Danger Zone" icon={AlertTriangle}>
+          <div className="flex items-center justify-between p-4 rounded-lg border border-red-200 bg-red-50/50">
+            <div>
+              <h3 className="text-sm font-semibold text-slate-900 mb-0.5">Delete this project</h3>
+              <p className="text-xs text-slate-500">
+                Open a confirmation page before permanently removing <span className="font-mono">{project.name}</span>.
+              </p>
+            </div>
+            <Link
+              href={`/project/${encodeURIComponent(project.name)}/delete`}
+              className="h-9 px-4 rounded-lg bg-white border border-red-200 text-red-600 text-sm font-medium hover:bg-red-50 transition-colors inline-flex items-center"
+            >
+              Delete Project
+            </Link>
           </div>
-          <Link
-            href={`/project/${encodeURIComponent(project.name)}/delete`}
-            className="h-9 px-4 rounded-lg bg-white border border-red-200 text-red-600 text-sm font-medium hover:bg-red-50 transition-colors inline-flex items-center"
-          >
-            Delete Project
-          </Link>
-        </div>
-      </Card>
+        </Card>
+      )}
     </div>
   );
 }
@@ -1481,7 +1684,7 @@ export function ProjectDeleteRoute() {
 // ─────────────────────────────────────────────────────────────────────────────
 type EnvRow = { key: string; value: string; hidden: boolean };
 
-function EnvVarsCard({ project }: { project: Project }) {
+function EnvVarsCard({ project, currentUserRole }: { project: Project, currentUserRole: string }) {
   const [, navigate] = useLocation();
   const [rows, setRows] = useState<EnvRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -1573,12 +1776,14 @@ function EnvVarsCard({ project }: { project: Project }) {
       title="Environment Variables"
       icon={Hash}
       action={
-        <button
-          onClick={() => setAdding(true)}
-          className="inline-flex items-center gap-1 h-7 px-2.5 rounded-lg border border-slate-200 text-xs font-medium text-slate-600 hover:bg-slate-50 transition-colors"
-        >
-          <Plus className="w-3 h-3" /> Add
-        </button>
+        currentUserRole !== "Viewer" && (
+          <button
+            onClick={() => setAdding(true)}
+            className="inline-flex items-center gap-1 h-7 px-2.5 rounded-lg border border-slate-200 text-xs font-medium text-slate-600 hover:bg-slate-50 transition-colors"
+          >
+            <Plus className="w-3 h-3" /> Add
+          </button>
+        )
       }
     >
       <div className="space-y-3">
@@ -1602,7 +1807,8 @@ function EnvVarsCard({ project }: { project: Project }) {
                 <input
                   value={row.key}
                   onChange={(e) => updateRow(i, "key", e.target.value)}
-                  className="w-36 shrink-0 h-8 px-2 rounded-lg border border-slate-200 bg-slate-50 text-xs font-mono text-slate-800 focus:outline-none focus:ring-2 focus:ring-sky-400/40 focus:border-sky-300"
+                  disabled={currentUserRole === "Viewer"}
+                  className="w-36 shrink-0 h-8 px-2 rounded-lg border border-slate-200 bg-slate-50 text-xs font-mono text-slate-800 focus:outline-none focus:ring-2 focus:ring-sky-400/40 focus:border-sky-300 disabled:opacity-60"
                   placeholder="KEY"
                 />
                 <span className="text-slate-300 text-xs">=</span>
@@ -1610,8 +1816,8 @@ function EnvVarsCard({ project }: { project: Project }) {
                   <input
                     value={row.hidden ? "•".repeat(Math.min(row.value.length, 24)) : row.value}
                     onChange={(e) => !row.hidden && updateRow(i, "value", e.target.value)}
-                    readOnly={row.hidden}
-                    className="w-full h-8 px-2 pr-8 rounded-lg border border-slate-200 bg-slate-50 text-xs font-mono text-slate-800 focus:outline-none focus:ring-2 focus:ring-sky-400/40 focus:border-sky-300"
+                    readOnly={row.hidden || currentUserRole === "Viewer"}
+                    className="w-full h-8 px-2 pr-8 rounded-lg border border-slate-200 bg-slate-50 text-xs font-mono text-slate-800 focus:outline-none focus:ring-2 focus:ring-sky-400/40 focus:border-sky-300 disabled:opacity-60"
                     placeholder="value"
                   />
                   <button
@@ -1621,12 +1827,14 @@ function EnvVarsCard({ project }: { project: Project }) {
                     {row.hidden ? <Eye className="w-3 h-3" /> : <EyeOff className="w-3 h-3" />}
                   </button>
                 </div>
-                <button
-                  onClick={() => handleDelete(row.key)}
-                  className="opacity-0 group-hover:opacity-100 w-7 h-7 rounded-lg flex items-center justify-center text-red-400 hover:bg-red-50 hover:text-red-600 transition-all"
-                >
-                  <Trash2 className="w-3.5 h-3.5" />
-                </button>
+                {currentUserRole !== "Viewer" && (
+                  <button
+                    onClick={() => handleDelete(row.key)}
+                    className="opacity-0 group-hover:opacity-100 w-7 h-7 rounded-lg flex items-center justify-center text-red-400 hover:bg-red-50 hover:text-red-600 transition-all"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
+                )}
               </div>
             ))}
           </div>
@@ -1638,12 +1846,14 @@ function EnvVarsCard({ project }: { project: Project }) {
               <Hash className="w-4 h-4 text-slate-400" />
             </div>
             <p className="text-xs text-slate-500">No environment variables yet.</p>
-            <button
-              onClick={() => setAdding(true)}
-              className="inline-flex items-center gap-1.5 h-8 px-3 rounded-lg bg-slate-900 text-white text-xs font-medium hover:bg-slate-800 transition-colors"
-            >
-              <Plus className="w-3 h-3" /> Add First Variable
-            </button>
+            {currentUserRole !== "Viewer" && (
+              <button
+                onClick={() => setAdding(true)}
+                className="inline-flex items-center gap-1.5 h-8 px-3 rounded-lg bg-slate-900 text-white text-xs font-medium hover:bg-slate-800 transition-colors"
+              >
+                <Plus className="w-3 h-3" /> Add First Variable
+              </button>
+            )}
           </div>
         )}
 
@@ -1692,7 +1902,7 @@ function EnvVarsCard({ project }: { project: Project }) {
         {error && <p className="text-xs text-red-500">{error}</p>}
 
         {/* Save / Redeploy buttons */}
-        {(rows.length > 0 || adding) && !loading && (
+        {(rows.length > 0 || adding) && !loading && currentUserRole !== "Viewer" && (
           <div className="flex items-center justify-between pt-1 gap-2 flex-wrap">
             <p className="text-xs text-slate-400">{rows.length} variable{rows.length !== 1 ? "s" : ""} total</p>
             <div className="flex items-center gap-2">
@@ -1729,30 +1939,104 @@ function EnvVarsCard({ project }: { project: Project }) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// WEBHOOK BANNER CARD — links to dedicated webhook setup page
+// WEBHOOK BANNER CARD — shows real connection status & links to /webhooks page
 // ─────────────────────────────────────────────────────────────────────────────
-function WebhookBannerCard({ project }: { project: Project }) {
+function WebhookBannerCard({ project, currentUserRole }: { project: Project; currentUserRole: string }) {
+  const [status, setStatus] = useState<"loading" | "unconfigured" | "pending" | "verified">("loading");
+
+  useEffect(() => {
+    let active = true;
+    async function checkStatus() {
+      try {
+        setStatus("loading");
+        const token = getAuthToken();
+        const workspaceId = localStorage.getItem("cloudrik-workspace");
+        let url = "/api-proxy/api/webhooks";
+        if (workspaceId) url += `?workspaceId=${workspaceId}`;
+        
+        const wRes = await fetch(url, {
+          headers: token ? { Authorization: `Bearer ${token}` } : {}
+        });
+        
+        if (!wRes.ok) {
+          if (active) setStatus("unconfigured");
+          return;
+        }
+        
+        const activeIds: string[] = await wRes.json();
+        const hasWebhook = activeIds.includes(project.name);
+        
+        if (!hasWebhook) {
+          if (active) setStatus("unconfigured");
+          return;
+        }
+        
+        const pingStatus = await getWebhookPingStatus(project.name);
+        if (active) {
+          if (pingStatus.verified) {
+            setStatus("verified");
+          } else {
+            setStatus("pending");
+          }
+        }
+      } catch (err) {
+        if (active) setStatus("unconfigured");
+      }
+    }
+    checkStatus();
+    return () => {
+      active = false;
+    };
+  }, [project.name]);
+
   return (
-    <Link href={`/project/${encodeURIComponent(project.name)}/webhook`}>
-      <div className="group flex items-center gap-4 bg-white border border-slate-200 rounded-2xl px-5 py-4 hover:border-slate-300 hover:shadow-sm transition-all cursor-pointer">
-        <div className="w-10 h-10 rounded-xl bg-slate-900 flex items-center justify-center shrink-0">
-          <Webhook className="w-5 h-5 text-white" />
-        </div>
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2 mb-0.5">
-            <span className="text-sm font-semibold text-slate-900">GitHub Webhook</span>
-            <span className="text-[10px] font-medium text-slate-500 bg-slate-100 px-1.5 py-0.5 rounded-full">Auto-deploy on push</span>
-          </div>
-          <p className="text-xs text-slate-500">
-            Connect GitHub → every <code className="font-mono bg-slate-100 px-1 rounded">git push</code> auto-deploys this project
-          </p>
-        </div>
-        <div className="flex items-center gap-1.5 shrink-0">
-          <span className="text-xs font-medium text-slate-600 group-hover:text-slate-900 transition-colors">Setup</span>
-          <ChevronRight className="w-4 h-4 text-slate-400 group-hover:text-slate-700 group-hover:translate-x-0.5 transition-all" />
-        </div>
+    <div className="bg-white border border-slate-200 rounded-2xl px-5 py-4 flex items-center gap-4">
+      <div className="w-10 h-10 rounded-xl bg-slate-900 flex items-center justify-center shrink-0">
+        <Webhook className="w-5 h-5 text-white" />
       </div>
-    </Link>
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-2 mb-0.5 flex-wrap">
+          <span className="text-sm font-semibold text-slate-900">GitHub Webhook</span>
+          <span className="text-[10px] font-medium text-slate-500 bg-slate-100 px-1.5 py-0.5 rounded-full">Auto-deploy on push</span>
+          
+          {status === "loading" && (
+            <span className="inline-flex items-center gap-1 text-[10px] text-slate-400">
+              <Loader2 className="w-3 h-3 animate-spin" /> Checking…
+            </span>
+          )}
+          {status === "verified" && (
+            <span className="inline-flex items-center gap-1.5 text-[10px] font-semibold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-full">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" /> Connected
+            </span>
+          )}
+          {status === "pending" && (
+            <span className="inline-flex items-center gap-1.5 text-[10px] font-semibold text-amber-700 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded-full">
+              <span className="w-1.5 h-1.5 rounded-full bg-amber-500" /> Pending Setup
+            </span>
+          )}
+          {status === "unconfigured" && (
+            <span className="inline-flex items-center gap-1.5 text-[10px] font-semibold text-slate-550 bg-slate-50 border border-slate-200 px-2 py-0.5 rounded-full">
+              <span className="w-1.5 h-1.5 rounded-full bg-slate-400" /> Not Connected
+            </span>
+          )}
+        </div>
+        <p className="text-xs text-slate-500">
+          {status === "verified" && "Auto-deploy is active — every git push triggers a new build."}
+          {status === "pending" && "Webhook created but awaiting GitHub handshake. Paste Payload URL into repo settings."}
+          {status === "unconfigured" && "Connect GitHub to auto-deploy this project on every git push."}
+          {status === "loading" && "Checking webhook configuration status..."}
+        </p>
+      </div>
+      {currentUserRole !== "Viewer" && status !== "loading" && (
+        <Link
+          href={`/webhooks?connect=${encodeURIComponent(project.name)}`}
+          className="shrink-0 inline-flex items-center gap-1.5 h-9 px-4 rounded-xl border border-slate-200 text-slate-700 text-xs font-semibold hover:bg-slate-50 hover:border-slate-300 transition-all"
+        >
+          {status === "unconfigured" ? "Connect" : "Manage"}
+          <ChevronRight className="w-3.5 h-3.5" />
+        </Link>
+      )}
+    </div>
   );
 }
 

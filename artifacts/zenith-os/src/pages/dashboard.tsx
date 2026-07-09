@@ -19,8 +19,13 @@ import {
   Activity,
   BarChart3,
   Trash2,
-  ExternalLink,
   Code2,
+  Moon,
+  Folder,
+  Sparkles,
+  Paperclip,
+  Mic,
+  Send,
 } from "lucide-react";
 
 import {
@@ -29,6 +34,7 @@ import {
   formatRelativeTime,
   deleteProjectFromServer,
   removeProjectLocally,
+  getAuthToken,
   type Project,
 } from "@/lib/projects";
 import { normalizeUrlForDisplay } from "@/lib/deploy";
@@ -74,6 +80,8 @@ function StatusDot({ status }: { status: string }) {
     return <span className="w-2 h-2 rounded-full bg-emerald-500 shadow-[0_0_6px_rgba(16,185,129,0.7)]" />;
   if (status === "failed")
     return <span className="w-2 h-2 rounded-full bg-red-500 shadow-[0_0_6px_rgba(239,68,68,0.7)]" />;
+  if (status === "stopped")
+    return <span className="w-2 h-2 rounded-full bg-slate-400 shadow-[0_0_6px_rgba(148,163,184,0.5)]" />;
   return <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse shadow-[0_0_6px_rgba(251,191,36,0.7)]" />;
 }
 
@@ -88,6 +96,12 @@ function StatusBadge({ status }: { status: string }) {
     return (
       <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-red-50 border border-red-200 text-red-700 text-xs font-medium">
         <XCircle className="w-3 h-3" /> Failed
+      </span>
+    );
+  if (status === "stopped")
+    return (
+      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-slate-100 border border-slate-300 text-slate-600 text-xs font-medium">
+        Stopped
       </span>
     );
   return (
@@ -131,10 +145,10 @@ function ProjectCard({
 
   return (
     <motion.div
-      initial={{ opacity: 0, y: 14 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.38, delay: index * 0.08, ease: [0.16, 1, 0.3, 1] }}
-      className="bg-white border border-slate-200 rounded-2xl overflow-hidden hover:border-slate-300 hover:shadow-md hover:shadow-slate-100 transition-all duration-250"
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      transition={{ duration: 0.2, delay: index * 0.05 }}
+      className="bg-white border border-slate-200/80 rounded-2xl overflow-hidden shadow-sm shadow-slate-200/50 hover:border-slate-300 hover:shadow-xl hover:shadow-slate-200/60 hover:-translate-y-0.5 transition-all duration-300"
     >
       {/* Header */}
       <Link
@@ -213,35 +227,136 @@ function ProjectCard({
 }
 
 function EmptyState() {
+  function handleConnectGitHub() {
+    const width = 600;
+    const height = 700;
+    const left = window.screen.width / 2 - width / 2;
+    const top = window.screen.height / 2 - height / 2;
+    const token = getAuthToken();
+    window.open(
+      "/api-proxy/api/auth/github" + (token ? "?token=" + encodeURIComponent(token) : ""),
+      "GitHub Authorization",
+      "width=" + width + ",height=" + height + ",top=" + top + ",left=" + left
+    );
+  }
+
   return (
-    <motion.div
-      initial={{ opacity: 0, y: 16 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.45 }}
-      className="bg-white border border-slate-200 rounded-2xl mb-8"
-    >
-      <div className="flex flex-col items-center justify-center py-14 px-8 text-center">
-        <div className="relative w-16 h-16 mb-5">
-          <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-violet-500 via-sky-500 to-emerald-400 flex items-center justify-center shadow-lg shadow-violet-200">
-            <Rocket className="w-8 h-8 text-white drop-shadow" />
+    <>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
+      {/* File Upload Card (Left Side) */}
+      <Link 
+        href="/import" 
+        className="group relative flex flex-col items-center justify-center text-center p-8 rounded-3xl bg-white border border-slate-200/80 shadow-xl shadow-slate-200/60 min-h-[300px] hover:border-cyan-300 hover:shadow-cyan-100/50 transition-all cursor-pointer overflow-hidden"
+      >
+        {/* Top Icon with Animated Background Rings */}
+        <div className="relative flex items-center justify-center w-20 h-20 mb-5">
+          <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[240px] h-[240px] pointer-events-none">
+             <div className="absolute inset-0 bg-cyan-50/70 rounded-full scale-[0.6] group-hover:scale-[0.85] transition-transform duration-1000 ease-out" />
+             <div className="absolute inset-0 bg-cyan-100/60 rounded-full scale-[0.4] group-hover:scale-[0.65] transition-transform duration-700 ease-out" />
           </div>
-          <span className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-gradient-to-br from-amber-400 to-orange-500 border-2 border-white shadow-sm" />
-          <span className="absolute -bottom-1 -left-1 w-3 h-3 rounded-full bg-gradient-to-br from-pink-400 to-rose-500 border-2 border-white shadow-sm" />
+
+          <svg width="84" height="84" viewBox="0 0 128 128" fill="none" xmlns="http://www.w3.org/2000/svg" className="relative z-10 group-hover:-translate-y-1.5 transition-transform duration-500">
+            {/* Back flap (Dark Blue) */}
+            <path d="M16 32C16 25.3726 21.3726 20 28 20H52C55.3137 20 58.4925 21.317 60.836 23.6604L65.164 27.988C67.5075 30.3315 70.6863 31.6484 74 31.6484H100C106.627 31.6484 112 37.0211 112 43.6484V96H16V32Z" fill="#2563EB" />
+            
+            {/* Paper (Pale Yellow) */}
+            <rect x="24" y="36" width="80" height="64" rx="4" fill="#FDE047" />
+            <rect x="28" y="36" width="76" height="64" rx="4" fill="#FEF08A" />
+            
+            {/* Front flap (Light Blue/Purple) */}
+            <path d="M12 48C12 41.3726 17.3726 36 24 36H104C110.627 36 116 41.3726 116 48V104C116 110.627 110.627 116 104 116H24C17.3726 116 12 110.627 12 104V48Z" fill="#93C5FD" />
+          </svg>
         </div>
-        <h3 className="text-base font-bold text-slate-800 mb-1.5">Deploy your first project</h3>
-        <p className="text-sm text-slate-400 max-w-xs mb-7">
-          Import any GitHub repo — React, Next.js, Python, Node.js, Go, PHP, and more.
+
+        <h3 className="text-lg font-bold text-slate-900 mb-2 relative z-10">Upload your project file</h3>
+
+        <p className="text-sm text-slate-500 mx-auto max-w-[300px] mb-6 leading-relaxed relative z-10">
+          Drag and drop your project ZIP file here, or browse your computer to manually upload your code.
+        </p>
+
+        {/* Buttons */}
+        <div className="flex items-center justify-center gap-3 mt-auto relative z-10">
+          <span className="px-5 py-2.5 rounded-xl text-xs font-bold text-blue-700 bg-blue-50 group-hover:bg-blue-100 transition-colors shadow-sm">
+            Choose a file
+          </span>
+          <span className="px-5 py-2.5 rounded-xl text-xs font-bold text-slate-600 border-2 border-slate-200 group-hover:border-blue-200 transition-colors bg-white shadow-sm">
+            Browse files
+          </span>
+        </div>
+      </Link>
+
+      {/* GitHub Connect Card (Right Side) */}
+      <motion.div
+        initial={{ opacity: 0, scale: 0.96 }}
+        animate={{ opacity: 1, scale: 1 }}
+        className="flex flex-col items-center justify-center text-center p-8 rounded-3xl bg-gradient-to-b from-slate-50 to-white border border-slate-200/80 shadow-xl shadow-slate-200/60 min-h-[300px]"
+      >
+        <div className="w-16 h-16 rounded-2xl bg-slate-900 flex items-center justify-center shadow-lg shadow-slate-900/10 mb-6">
+          <Github className="w-8 h-8 text-white" />
+        </div>
+        <h3 className="text-xl font-bold text-slate-900 mb-3">Connect GitHub Account</h3>
+        <p className="text-sm text-slate-500 max-w-[320px] mb-8 leading-relaxed">
+          Link your GitHub account to directly deploy and manage all your public and private repositories in a single click, Vercel-style.
         </p>
         <div className="flex items-center gap-3 flex-wrap justify-center">
-          <Link href="/import" className="flex items-center gap-2 h-9 px-5 rounded-xl bg-slate-900 text-white text-sm font-medium hover:bg-slate-800 transition-colors shadow-sm">
-            <Github className="w-4 h-4" /> Import from GitHub
-          </Link>
-          <Link href="/import" className="flex items-center gap-2 h-9 px-5 rounded-xl bg-white border border-slate-200 text-slate-700 text-sm font-medium hover:bg-slate-50 hover:border-slate-300 transition-colors">
-            <Upload className="w-4 h-4" /> Upload ZIP
-          </Link>
+          <button
+            onClick={handleConnectGitHub}
+            className="flex items-center gap-3 px-8 h-14 rounded-2xl text-sm font-bold text-white bg-slate-900 hover:bg-slate-800 active:scale-95 transition-all shadow-md shadow-slate-900/10 hover:shadow-lg"
+          >
+            <Github className="w-5 h-5" />
+            Connect with GitHub
+          </button>
         </div>
+      </motion.div>
       </div>
-    </motion.div>
+
+      {/* AI Chat Section */}
+      <motion.div
+        initial={{ opacity: 0, y: 10 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.3, delay: 0.1 }}
+        className="mb-4"
+      >
+        <div className="flex items-center justify-between mb-4 px-1">
+          <div>
+            <h2 className="text-xl font-bold text-slate-800 mb-3">Ask Anything with Cloudrik</h2>
+            <p className="text-sm text-slate-600">Confused about deployment? Ask questions, plan your architecture, or fix errors instantly.</p>
+          </div>
+        </div>
+        
+        <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden shadow-sm">
+          {/* Textarea */}
+          <textarea
+            placeholder="Confused? Ask about deployment, domains, errors, or anything on the platform..."
+            className="w-full bg-transparent text-sm text-slate-800 placeholder:text-slate-400 outline-none resize-none px-5 pt-3.5 pb-2 min-h-[40px]"
+            rows={1}
+          />
+
+          {/* Bottom Toolbar */}
+          <div className="flex items-center justify-between px-4 py-2">
+            {/* Left: Model label */}
+            <div className="flex items-center gap-1.5 text-xs text-slate-500 font-medium">
+              <div className="w-4 h-4 rounded-full bg-gradient-to-br from-indigo-500 to-purple-600 flex-shrink-0" />
+              Cloudrik AI
+            </div>
+
+            {/* Right: Icons + Send */}
+            <div className="flex items-center gap-1">
+              <button className="p-2 text-slate-600 hover:text-slate-900 hover:bg-slate-100 rounded-xl transition-colors">
+                <Mic className="w-4 h-4" />
+              </button>
+              <button className="p-2 text-slate-600 hover:text-slate-900 hover:bg-slate-100 rounded-xl transition-colors">
+                <Paperclip className="w-4 h-4" />
+              </button>
+              <button className="flex items-center gap-1.5 ml-2 px-4 py-2 rounded-xl bg-slate-800 text-white text-xs font-semibold hover:bg-slate-700 transition-colors shadow-sm">
+                <Send className="w-3.5 h-3.5" />
+                Send
+              </button>
+            </div>
+          </div>
+        </div>
+      </motion.div>
+    </>
   );
 }
 
@@ -251,28 +366,55 @@ export default function Dashboard() {
 
   async function loadAllProjects() {
     const local = getProjects();
-    setProjects(local);
+    
+    // Deduplicate initial local list by name
+    const seenLocal = new Set<string>();
+    const uniqueLocal = local.filter((p) => {
+      if (seenLocal.has(p.name)) return false;
+      seenLocal.add(p.name);
+      return true;
+    });
+    setProjects(uniqueLocal);
+    
     setServerLoading(true);
     const server = await fetchProjectsFromServer();
     setServerLoading(false);
+    
     if (server.length > 0) {
-      const serverNames = new Set(server.map((p) => p.name));
-      const localOnly = local.filter((p) => !serverNames.has(p.name));
-      setProjects([...server, ...localOnly]);
+      const seenNames = new Set<string>();
+      const combined: Project[] = [];
+      
+      // 1. Add server projects first
+      for (const p of server) {
+        if (!seenNames.has(p.name)) {
+          seenNames.add(p.name);
+          combined.push(p);
+        }
+      }
+      
+      // 2. Add local-only projects
+      for (const p of uniqueLocal) {
+        if (!seenNames.has(p.name)) {
+          seenNames.add(p.name);
+          combined.push(p);
+        }
+      }
+      
+      // Clean up localStorage duplicate entries
+      localStorage.setItem("zenith.projects", JSON.stringify(uniqueLocal));
+      
+      setProjects(combined.sort((a, b) => b.deployedAt - a.deployedAt));
     } else {
-      setProjects(local);
-      setServerLoading(false);
+      setProjects([]);
+      localStorage.removeItem("zenith.projects");
     }
   }
 
   useEffect(() => {
     void loadAllProjects();
-    const onFocus = () => void loadAllProjects();
     const onStorage = () => void loadAllProjects();
-    window.addEventListener("focus", onFocus);
     window.addEventListener("storage", onStorage);
     return () => {
-      window.removeEventListener("focus", onFocus);
       window.removeEventListener("storage", onStorage);
     };
   }, []);
@@ -291,34 +433,38 @@ export default function Dashboard() {
 
   return (
     <AppShell activeNav="Projects">
-      <div className="max-w-6xl mx-auto px-6 py-6">
+      <div className="max-w-7xl mx-auto px-6 py-6">
         {/* Page Header */}
         <motion.div
-          initial={{ opacity: 0, y: -8 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.4 }}
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          transition={{ duration: 0.2 }}
           className="flex items-center justify-between mb-6"
         >
           <div>
             <h1 className="text-xl font-bold text-slate-900">Projects</h1>
-            <p className="text-sm text-slate-400 mt-0.5">
-              {serverLoading ? (
-                <span className="inline-flex items-center gap-1.5">
-                  <Loader2 className="w-3 h-3 animate-spin" /> Syncing from server...
-                </span>
-              ) : (
-                `${projects.length} project${projects.length !== 1 ? "s" : ""} · ${liveCount} live · ${failedCount} failed`
-              )}
-            </p>
+            {projects.length > 0 && (
+              <p className="text-sm text-slate-400 mt-0.5">
+                {serverLoading ? (
+                  <span className="inline-flex items-center gap-1.5">
+                    <Loader2 className="w-3 h-3 animate-spin" /> Syncing from server...
+                  </span>
+                ) : (
+                  `${projects.length} project${projects.length !== 1 ? "s" : ""} · ${liveCount} live · ${failedCount} failed`
+                )}
+              </p>
+            )}
           </div>
           <div className="flex items-center gap-2">
-            <button
-              onClick={() => void loadAllProjects()}
-              className="flex items-center gap-1.5 h-9 px-3 rounded-xl bg-white border border-slate-200 text-slate-600 text-sm font-medium hover:bg-slate-50 hover:border-slate-300 transition-colors shadow-sm"
-            >
-              <RefreshCw className={`w-3.5 h-3.5 ${serverLoading ? "animate-spin" : ""}`} />
-              Refresh
-            </button>
+            {projects.length > 0 && (
+              <button
+                onClick={() => void loadAllProjects()}
+                className="flex items-center gap-1.5 h-9 px-3 rounded-xl bg-white border border-slate-200 text-slate-600 text-sm font-medium hover:bg-slate-50 hover:border-slate-300 transition-colors shadow-sm"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${serverLoading ? "animate-spin" : ""}`} />
+                Refresh
+              </button>
+            )}
             <Link
               href="/import"
               className="flex items-center gap-2 h-9 px-4 rounded-xl bg-slate-900 text-white text-sm font-medium hover:bg-slate-800 transition-colors shadow-sm"
@@ -336,59 +482,25 @@ export default function Dashboard() {
               <ProjectCard key={project.id} project={project} index={i} onDelete={handleDelete} />
             ))}
           </div>
+        ) : serverLoading ? (
+          <div className="flex flex-col items-center justify-center py-20 mb-8 bg-white border border-slate-200 rounded-2xl text-slate-400">
+            <Loader2 className="w-8 h-8 animate-spin mb-4 text-slate-300" />
+            <span className="text-sm font-medium">Loading workspace...</span>
+          </div>
         ) : (
           <EmptyState />
         )}
 
-        <div className="h-px bg-gradient-to-r from-transparent via-slate-200 to-transparent my-8" />
 
-        {/* Stats */}
-        <motion.div
-          initial={{ opacity: 0, y: 12 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.5, delay: 0.3 }}
-        >
-          <div className="flex items-center gap-2 mb-4">
-            <Activity className="w-4 h-4 text-slate-400" />
-            <h2 className="text-sm font-semibold text-slate-700">Stats Overview</h2>
-          </div>
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-            {[
-              { label: "Projects", value: String(projects.length), sub: `${liveCount} live`, icon: Layers, color: "text-sky-500", bg: "bg-sky-50", border: "border-sky-100" },
-              { label: "Live", value: String(liveCount), sub: `${failedCount} failed`, icon: Rocket, color: "text-violet-500", bg: "bg-violet-50", border: "border-violet-100" },
-              { label: "Server", value: serverLoading ? "..." : "Online", sub: "13.233.87.37:5000", icon: TrendingUp, color: "text-emerald-500", bg: "bg-emerald-50", border: "border-emerald-100" },
-            ].map(({ label, value, sub, icon: Icon, color, bg, border }, i) => (
-              <motion.div
-                key={label}
-                initial={{ opacity: 0, y: 10 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ duration: 0.4, delay: 0.35 + i * 0.08 }}
-                className="bg-white border border-slate-200 rounded-2xl p-5 hover:shadow-md hover:shadow-slate-100 transition-all"
-              >
-                <div className="flex items-center justify-between mb-3">
-                  <span className="text-xs font-semibold text-slate-500 uppercase tracking-wide">{label}</span>
-                  <div className={`w-8 h-8 rounded-xl ${bg} border ${border} flex items-center justify-center`}>
-                    <Icon className={`w-4 h-4 ${color}`} />
-                  </div>
-                </div>
-                <div className="text-3xl font-bold text-slate-900 mb-1 font-mono tracking-tight">{value}</div>
-                <div className="flex items-center gap-1 text-xs text-slate-400">
-                  <ArrowUpRight className={`w-3 h-3 ${color}`} />
-                  {sub}
-                </div>
-              </motion.div>
-            ))}
-          </div>
-        </motion.div>
 
         <div className="h-px bg-gradient-to-r from-transparent via-slate-200 to-transparent my-8" />
 
         {/* Usage */}
         <motion.div
-          initial={{ opacity: 0, y: 12 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.5, delay: 0.4 }}
-          className="bg-white border border-slate-200 rounded-2xl overflow-hidden mb-6"
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          transition={{ duration: 0.2 }}
+          className="bg-white border border-slate-200/80 rounded-2xl overflow-hidden shadow-sm shadow-slate-200/50 mb-6 hover:shadow-md hover:shadow-slate-200/50 transition-all duration-300"
         >
           <div className="flex items-center justify-between px-5 py-4 border-b border-slate-100">
             <div className="flex items-center gap-2">
@@ -403,8 +515,8 @@ export default function Dashboard() {
           <div className="px-5 py-4 space-y-4">
             {[
               { label: "Deployments", used: projects.length, total: 100, display: `${projects.length} / 100`, color: "bg-sky-500", trackColor: "bg-sky-100" },
-              { label: "Bandwidth", used: 120, total: 10240, display: "120 MB / 10 GB", color: "bg-violet-500", trackColor: "bg-violet-100" },
-              { label: "Builds", used: projects.length + 2, total: 200, display: `${projects.length + 2} / 200`, color: "bg-emerald-500", trackColor: "bg-emerald-100" },
+              { label: "Bandwidth", used: 0, total: 10240, display: "0 MB / 10 GB", color: "bg-violet-500", trackColor: "bg-violet-100" },
+              { label: "Builds", used: projects.length, total: 200, display: `${projects.length} / 200`, color: "bg-emerald-500", trackColor: "bg-emerald-100" },
             ].map(({ label, used, total, display, color, trackColor }) => {
               const pct = Math.min((used / total) * 100, 100);
               return (

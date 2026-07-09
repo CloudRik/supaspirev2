@@ -23,9 +23,59 @@ pool.query(`
   )
 `).catch(console.error);
 
+pool.query(`
+  CREATE TABLE IF NOT EXISTS projects (
+    id SERIAL PRIMARY KEY,
+    user_id VARCHAR(36) REFERENCES users(id) ON DELETE CASCADE,
+    name VARCHAR(255) NOT NULL,
+    slug VARCHAR(255) NOT NULL UNIQUE,
+    repo VARCHAR(255) NOT NULL,
+    port INTEGER NOT NULL,
+    container VARCHAR(255),
+    status VARCHAR(50) DEFAULT 'running',
+    framework VARCHAR(100),
+    deploy_mode VARCHAR(50),
+    url VARCHAR(255),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+  )
+`).catch(console.error);
+
+pool.query(`
+  CREATE TABLE IF NOT EXISTS team_members (
+    id VARCHAR(36) PRIMARY KEY,
+    owner_id VARCHAR(36) REFERENCES users(id) ON DELETE CASCADE,
+    email VARCHAR(255) NOT NULL,
+    role VARCHAR(50) DEFAULT 'Member',
+    has_2fa BOOLEAN DEFAULT false,
+    joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+  )
+`).catch(console.error);
+
+const JWT_SECRET = process.env.JWT_SECRET || "super_secret_jwt_key_12345";
+
+const requireAuth = (req, res, next) => {
+  let token;
+  if (req.headers.authorization) {
+    token = req.headers.authorization.split(" ")[1];
+  } else if (req.query.token) {
+    token = req.query.token;
+  }
+  
+  if (!token) return res.status(401).json({ error: "No token provided" });
+  
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    req.userId = decoded.userId;
+    next();
+  } catch (err) {
+    res.status(401).json({ error: "Invalid token" });
+  }
+};
+
 
 const app = express();
-const PUBLIC_IP = '13.233.87.37';
+const PUBLIC_IP = '3.109.177.105';
 const DEPLOY_SCRIPT = path.resolve(__dirname, '../deploy.sh');
 const PROJECTS_FILE = path.resolve(__dirname, 'projects.json');
 const ENV_VARS_FILE = path.resolve(__dirname, 'env_vars.json');
@@ -79,7 +129,7 @@ function processQueue() {
     text.split('\n').filter(l => l.trim()).forEach(line => job.send({ type: 'log', line }));
   });
 
-  child.on('close', function (code) {
+  child.on('close', async function (code) {
     clearInterval(job.heartbeat);
     const liveUrl = 'http://' + PUBLIC_IP + ':' + job.port + '/';
     const containerName = actualContainer || ('app_' + Date.now());
@@ -95,6 +145,26 @@ function processQueue() {
     allProjects.push(project);
     saveProjects(allProjects);
     if (code === 0) regenerateNginxConfig();
+
+    try {
+      if (job.userId) {
+         await pool.query(`
+           INSERT INTO projects (user_id, name, slug, repo, port, container, status, framework, deploy_mode, url, last_accessed)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, CURRENT_TIMESTAMP)
+           ON CONFLICT (slug) DO UPDATE SET
+             status = EXCLUDED.status,
+             port = EXCLUDED.port,
+             container = EXCLUDED.container,
+             framework = EXCLUDED.framework,
+             deploy_mode = EXCLUDED.deploy_mode,
+             url = EXCLUDED.url,
+             updated_at = CURRENT_TIMESTAMP,
+             last_accessed = CURRENT_TIMESTAMP
+         `, [job.userId, job.repoName, job.slug, job.repo, job.port, containerName, project.status, framework, deployMode, liveUrl]);
+      }
+    } catch(err) {
+      console.error("DB Insert error:", err);
+    }
 
     job.send({ type: 'done', success: code === 0, url: code === 0 ? liveUrl : null, project, framework });
     job.res.end();
@@ -154,12 +224,14 @@ function cleanDeployDir(containerName) {
   try { if (fs.existsSync(dir)) execSync('rm -rf ' + dir, { stdio: 'ignore' }); } catch { }
 }
 function regenerateNginxConfig() {
-  const projects = loadProjects().filter(p => p.status === 'running');
+  const allProjects = loadProjects();
   let locations = '';
-  for (const p of projects) {
+
+  for (const p of allProjects) {
     const slug = (p.slug || p.name).replace(/[^a-zA-Z0-9_-]/g, '-').toLowerCase();
     locations += '\n    location /' + slug + '/ {\n        proxy_pass http://127.0.0.1:' + p.port + '/;\n        proxy_http_version 1.1;\n        proxy_set_header Upgrade $http_upgrade;\n        proxy_set_header Connection \'upgrade\';\n        proxy_set_header Host $host;\n        proxy_cache_bypass $http_upgrade;\n    }';
   }
+  
   const config = 'server {\n    listen 80;\n    server_name _;\n    location / {\n        return 200 \'ZenithOS Deployment Server\';\n        add_header Content-Type text/plain;\n    }\n' + locations + '\n}';
   try {
     fs.writeFileSync('/tmp/zenith_nginx.conf', config);
@@ -254,14 +326,24 @@ function runDeploy(repo, res, isStream) {
   }
 }
 
-app.get('/', (_req, res) => res.json({ status: 'ZenithOS Backend Running', ip: PUBLIC_IP }));
+app.get('/', (_req, res) => res.json({ status: 'ZenithOS Backend Running', ip: PUBLIC_IP, serverless: true }));
 app.get('/api/test', (_req, res) => res.json({ message: 'API working', ip: PUBLIC_IP }));
-app.get('/projects', (_req, res) => res.json(loadProjects()));
+
+
+app.get('/projects', requireAuth, async (req, res) => {
+  try {
+    const { rows } = await pool.query('SELECT * FROM projects WHERE user_id = $1 ORDER BY created_at DESC', [req.userId]);
+    res.json(rows);
+  } catch (error) {
+    console.error('Error fetching projects:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
 app.get('/queue', (_req, res) => res.json({ running: deployRunning, queued: deployQueue.length, total: deployQueue.length + (deployRunning ? 1 : 0), projects: deployQueue.map((j, i) => ({ name: j.repoName, position: i + 2 })) }));
 
 
 // SSE streaming endpoint
-app.get('/deploy/stream', (req, res) => {
+app.get('/deploy/stream', requireAuth, (req, res) => {
   let repo = req.query.repo;
   if (!repo) { res.status(400).end(); return; }
 
@@ -313,7 +395,7 @@ app.get('/deploy/stream', (req, res) => {
     send({ type: 'queued', position: queuePos + 1, total: queuePos + 1 });
   }
 
-  const job = { repo, port, repoName, slug, existing, send, res, heartbeat, cancelFn: null };
+  const job = { repo, port, repoName, slug, existing, send, res, heartbeat, cancelFn: null, userId: req.userId };
   deployQueue.push(job);
   processQueue();
 
@@ -402,28 +484,35 @@ app.post('/deploy', (req, res) => {
   });
 });
 
-app.delete('/projects/:name', (req, res) => {
+app.delete('/projects/:name', requireAuth, async (req, res) => {
   const name = req.params.name;
-  const projects = loadProjects();
-  const project = projects.find(p => p.name === name);
-  if (!project) return res.status(404).json({ error: 'Project not found' });
-  stopContainer(project.container);
-  cleanDeployDir(project.container);
-  saveProjects(projects.filter(p => p.name !== name));
-  regenerateNginxConfig();
-  res.json({ success: true });
+  try {
+    const { rows } = await pool.query('SELECT container FROM projects WHERE name = $1 AND user_id = $2', [name, req.userId]);
+    if (rows.length === 0) return res.status(403).json({ error: 'Unauthorized or not found' });
+    
+    const projects = loadProjects();
+    const project = projects.find(p => p.name === name) || rows[0];
+    
+    stopContainer(project.container);
+    cleanDeployDir(project.container);
+    saveProjects(projects.filter(p => p.name !== name));
+    await pool.query('DELETE FROM projects WHERE name = $1 AND user_id = $2', [name, req.userId]);
+    regenerateNginxConfig();
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
 });
 
 // ── Static Logs Snapshot ────────────────────────────────────────────────────
-app.get('/projects/:name/logs', (req, res) => {
+app.get('/projects/:name/logs', requireAuth, async (req, res) => {
   const { name } = req.params;
   const lines = parseInt(req.query.lines) || 100;
-  const projects = loadProjects();
-  const project = projects.find(p => p.name === name);
-  if (!project) return res.status(404).json({ error: 'Project not found' });
-
-  const containerName = project.container || name;
   try {
+    const { rows } = await pool.query('SELECT container FROM projects WHERE name = $1 AND user_id = $2', [name, req.userId]);
+    if (rows.length === 0) return res.status(403).json({ error: 'Unauthorized or not found' });
+    
+    const containerName = rows[0].container || name;
     const logs = execSync(`docker logs --tail=${lines} ${containerName} 2>&1`, { timeout: 5000 }).toString();
     res.json({ logs: logs.split('\n').filter(l => l.trim()) });
   } catch (e) {
@@ -432,57 +521,72 @@ app.get('/projects/:name/logs', (req, res) => {
 });
 
 // ── Container Lifecycle Controls ───────────────────────────────────────────
-app.post('/projects/:name/start', (req, res) => {
+app.post('/projects/:name/start', requireAuth, async (req, res) => {
   const { name } = req.params;
-  const projects = loadProjects();
-  const index = projects.findIndex(p => p.name === name);
-  if (index === -1) return res.status(404).json({ error: 'Project not found' });
-
-  const project = projects[index];
-  const containerName = project.container || name;
   try {
+    const { rows } = await pool.query('SELECT container FROM projects WHERE name = $1 AND user_id = $2', [name, req.userId]);
+    if (rows.length === 0) return res.status(403).json({ error: 'Unauthorized or not found' });
+    
+    const containerName = rows[0].container || name;
     execSync(`docker start ${containerName}`);
-    project.status = 'running';
-    saveProjects(projects);
-    regenerateNginxConfig();
+    
+    const projects = loadProjects();
+    const index = projects.findIndex(p => p.name === name);
+    if (index !== -1) {
+      projects[index].status = 'running';
+      saveProjects(projects);
+      regenerateNginxConfig();
+    }
+    await pool.query('UPDATE projects SET status = $1 WHERE name = $2 AND user_id = $3', ['running', name, req.userId]);
+    
     res.json({ success: true, status: 'running' });
   } catch (e) {
     res.status(500).json({ error: 'Failed to start container: ' + e.message });
   }
 });
 
-app.post('/projects/:name/stop', (req, res) => {
+app.post('/projects/:name/stop', requireAuth, async (req, res) => {
   const { name } = req.params;
-  const projects = loadProjects();
-  const index = projects.findIndex(p => p.name === name);
-  if (index === -1) return res.status(404).json({ error: 'Project not found' });
-
-  const project = projects[index];
-  const containerName = project.container || name;
   try {
+    const { rows } = await pool.query('SELECT container FROM projects WHERE name = $1 AND user_id = $2', [name, req.userId]);
+    if (rows.length === 0) return res.status(403).json({ error: 'Unauthorized or not found' });
+    
+    const containerName = rows[0].container || name;
     execSync(`docker stop ${containerName}`);
-    project.status = 'stopped';
-    saveProjects(projects);
-    regenerateNginxConfig();
+    
+    const projects = loadProjects();
+    const index = projects.findIndex(p => p.name === name);
+    if (index !== -1) {
+      projects[index].status = 'stopped';
+      saveProjects(projects);
+      regenerateNginxConfig();
+    }
+    await pool.query('UPDATE projects SET status = $1 WHERE name = $2 AND user_id = $3', ['stopped', name, req.userId]);
+    
     res.json({ success: true, status: 'stopped' });
   } catch (e) {
     res.status(500).json({ error: 'Failed to stop container: ' + e.message });
   }
 });
 
-app.post('/projects/:name/restart', (req, res) => {
+app.post('/projects/:name/restart', requireAuth, async (req, res) => {
   const { name } = req.params;
-  const projects = loadProjects();
-  const index = projects.findIndex(p => p.name === name);
-  if (index === -1) return res.status(404).json({ error: 'Project not found' });
-
-  const project = projects[index];
-  const containerName = project.container || name;
   try {
+    const { rows } = await pool.query('SELECT container FROM projects WHERE name = $1 AND user_id = $2', [name, req.userId]);
+    if (rows.length === 0) return res.status(403).json({ error: 'Unauthorized or not found' });
+    
+    const containerName = rows[0].container || name;
     execSync(`docker restart ${containerName}`);
-    project.status = 'running';
-    saveProjects(projects);
-    regenerateNginxConfig();
+    
+    const projects = loadProjects();
+    const index = projects.findIndex(p => p.name === name);
+    if (index !== -1) {
+      projects[index].status = 'running';
+      saveProjects(projects);
+      regenerateNginxConfig();
+    }
+    await pool.query('UPDATE projects SET status = $1 WHERE name = $2 AND user_id = $3', ['running', name, req.userId]);
+    
     res.json({ success: true, status: 'running' });
   } catch (e) {
     res.status(500).json({ error: 'Failed to restart container: ' + e.message });
@@ -495,7 +599,11 @@ app.post('/projects/:name/restart', (req, res) => {
   for (const p of projects) {
     if (!p.slug) {
       p.slug = p.name.replace(/[^a-zA-Z0-9_-]/g, '-').toLowerCase();
-      p.url = 'http://' + PUBLIC_IP + ':' + p.port + '/';
+      changed = true;
+    }
+    const expectedUrl = 'http://' + PUBLIC_IP + '/' + p.slug + '/';
+    if (p.url !== expectedUrl) {
+      p.url = expectedUrl;
       changed = true;
     }
   }
@@ -506,12 +614,15 @@ regenerateNginxConfig();
 
 
 // ── Real-time log streaming (SSE) ───────────────────────────────────────────
-app.get('/projects/:name/logs/stream', (req, res) => {
+app.get('/projects/:name/logs/stream', requireAuth, async (req, res) => {
   const { name } = req.params;
   const tail = parseInt(req.query.tail) || 50;
-  const projects = loadProjects();
-  const project = projects.find(function (p) { return p.name === name; });
-  const containerName = (project && project.container) ? project.container : name;
+  
+  try {
+    const { rows } = await pool.query('SELECT container FROM projects WHERE name = $1 AND user_id = $2', [name, req.userId]);
+    if (rows.length === 0) return res.status(403).json({ error: 'Unauthorized or not found' });
+    
+    const containerName = rows[0].container || name;
 
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
@@ -562,6 +673,9 @@ app.get('/projects/:name/logs/stream', (req, res) => {
     if (child) { try { child.kill('SIGTERM'); } catch (e) { } }
     res.end();
   });
+  } catch (e) {
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
 });
 
 // ── Container resource stats (cached, refreshes every 4s) ───────────────────
@@ -577,7 +691,7 @@ function refreshStatsCache() {
     const parsed = stdout.trim().split('\n').filter(function (l) { return l.trim(); }).map(function (l) {
       try { return JSON.parse(l); } catch (e) { return null; }
     }).filter(Boolean);
-    if (parsed.length > 0) _statsCache = parsed;
+    _statsCache = parsed;
   });
 }
 
@@ -586,10 +700,20 @@ refreshStatsCache();
 // Keep refreshing every 4 seconds
 setInterval(refreshStatsCache, 4000);
 
-app.get('/stats', function (_req, res) {
-  res.json(_statsCache);
-  // Trigger a fresh update in background
-  refreshStatsCache();
+app.get('/stats', requireAuth, async function (req, res) {
+  try {
+    const { rows } = await pool.query('SELECT container FROM projects WHERE user_id = $1', [req.userId]);
+    const userContainers = new Set(rows.map(r => r.container));
+    
+    // Filter _statsCache to only include containers belonging to this user
+    const filteredStats = _statsCache.filter(stat => userContainers.has(stat.Name));
+    
+    res.json(filteredStats);
+    refreshStatsCache();
+  } catch (error) {
+    console.error("Error fetching stats:", error);
+    res.status(500).json({ error: "Internal Server Error" });
+  }
 });
 app.listen(5000, '0.0.0.0', () => console.log('ZenithOS API running on port 5000 | IP: ' + PUBLIC_IP));
 
@@ -617,45 +741,93 @@ function getOrCreateSecret(projectName) {
 
 // GET /webhook/info/:projectName — return webhook URL + secret
 // ── Environment Variables ─────────────────────────────────────────────────────
-app.get('/projects/:name/env', (req, res) => {
-  const vars = getProjectEnvVars(req.params.name);
-  res.json(vars);
-});
-
-app.post('/projects/:name/env', (req, res) => {
-  const { vars } = req.body;
-  if (!vars || typeof vars !== 'object') return res.status(400).json({ error: 'vars required' });
-  // Sanitize: only string values
-  const clean = {};
-  for (const [k, v] of Object.entries(vars)) {
-    if (k && typeof k === 'string') clean[k.trim()] = String(v ?? '');
+app.get('/projects/:name/env', requireAuth, async (req, res) => {
+  try {
+    const { rows } = await pool.query('SELECT name FROM projects WHERE name = $1 AND user_id = $2', [req.params.name, req.userId]);
+    if (rows.length === 0) return res.status(403).json({ error: 'Unauthorized or not found' });
+    
+    const vars = getProjectEnvVars(req.params.name);
+    res.json(vars);
+  } catch (e) {
+    res.status(500).json({ error: 'Internal Server Error' });
   }
-  setProjectEnvVars(req.params.name, clean);
-  res.json({ ok: true, saved: Object.keys(clean).length });
 });
 
-app.delete('/projects/:name/env/:key', (req, res) => {
-  const all = loadAllEnvVars();
-  const project = all[req.params.name] || {};
-  delete project[decodeURIComponent(req.params.key)];
-  all[req.params.name] = project;
-  saveAllEnvVars(all);
-  res.json({ ok: true });
+app.post('/projects/:name/env', requireAuth, async (req, res) => {
+  try {
+    const { rows } = await pool.query('SELECT name FROM projects WHERE name = $1 AND user_id = $2', [req.params.name, req.userId]);
+    if (rows.length === 0) return res.status(403).json({ error: 'Unauthorized or not found' });
+    
+    const { vars } = req.body;
+    if (!vars || typeof vars !== 'object') return res.status(400).json({ error: 'vars required' });
+    // Sanitize: only string values
+    const clean = {};
+    for (const [k, v] of Object.entries(vars)) {
+      if (k && typeof k === 'string') clean[k.trim()] = String(v ?? '');
+    }
+    setProjectEnvVars(req.params.name, clean);
+    res.json({ ok: true, saved: Object.keys(clean).length });
+  } catch (e) {
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
 });
 
-app.get('/webhook/info/:projectName', (req, res) => {
+app.delete('/projects/:name/env/:key', requireAuth, async (req, res) => {
+  try {
+    const { rows } = await pool.query('SELECT name FROM projects WHERE name = $1 AND user_id = $2', [req.params.name, req.userId]);
+    if (rows.length === 0) return res.status(403).json({ error: 'Unauthorized or not found' });
+    
+    const all = loadAllEnvVars();
+    const project = all[req.params.name] || {};
+    delete project[decodeURIComponent(req.params.key)];
+    all[req.params.name] = project;
+    saveAllEnvVars(all);
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+app.get('/webhook/info/:projectName', requireAuth, async (req, res) => {
   const name = req.params.projectName;
-  const projects = loadProjects();
-  const project = projects.find(p => p.name === name);
-  if (!project) return res.status(404).json({ error: 'Project not found' });
-  const secret = getOrCreateSecret(name);
-  const slug = (project.slug || name).replace(/[^a-zA-Z0-9_-]/g, '-').toLowerCase();
-  res.json({
-    webhookUrl: 'http://' + PUBLIC_IP + ':5000/webhook/' + slug,
-    secret,
-    projectName: name,
-    slug,
-  });
+  try {
+    const { rows } = await pool.query('SELECT slug FROM projects WHERE name = $1 AND user_id = $2', [name, req.userId]);
+    if (rows.length === 0) return res.status(403).json({ error: 'Unauthorized or not found' });
+    
+    const secrets = loadWebhookSecrets();
+    const secret = secrets[name];
+    if (!secret) {
+      return res.status(404).json({ error: 'Webhook not configured' });
+    }
+    const slug = rows[0].slug || name;
+    res.json({
+      webhookUrl: 'http://' + PUBLIC_IP + ':5000/webhook/' + slug,
+      secret,
+      projectName: name,
+      slug,
+    });
+  } catch (e) {
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+app.post('/webhook/info/:projectName', requireAuth, async (req, res) => {
+  const name = req.params.projectName;
+  try {
+    const { rows } = await pool.query('SELECT slug FROM projects WHERE name = $1 AND user_id = $2', [name, req.userId]);
+    if (rows.length === 0) return res.status(403).json({ error: 'Unauthorized or not found' });
+    
+    const secret = getOrCreateSecret(name);
+    const slug = rows[0].slug || name;
+    res.json({
+      webhookUrl: 'http://' + PUBLIC_IP + ':5000/webhook/' + slug,
+      secret,
+      projectName: name,
+      slug,
+    });
+  } catch (e) {
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
 });
 
 // POST /webhook/:slug — GitHub push webhook
@@ -751,19 +923,24 @@ app.get('/projects/:name/logs', (req, res) => {
 });
 
 // ── All deployments ──────────────────────────────────────────────────────────
-app.get('/deployments', (_req, res) => {
-  const projects = loadProjects();
-  res.json(projects.map((p, i) => ({
-    id: i + 1,
-    project: p.name,
-    slug: p.slug || p.name,
-    status: p.status || 'running',
-    framework: p.framework || 'unknown',
-    repo: p.repo || '',
-    url: p.url || ('http://' + PUBLIC_IP + ':' + p.port),
-    port: p.port,
-    createdAt: p.createdAt || new Date().toISOString(),
-  })));
+app.get('/deployments', requireAuth, async (req, res) => {
+  try {
+    const { rows } = await pool.query('SELECT * FROM projects WHERE user_id = $1 ORDER BY created_at DESC', [req.userId]);
+    res.json(rows.map((p, i) => ({
+      id: i + 1,
+      project: p.name,
+      slug: p.slug || p.name,
+      status: p.status || 'running',
+      framework: p.framework || 'unknown',
+      repo: p.repo || '',
+      url: p.url || ('http://' + PUBLIC_IP + ':' + p.port),
+      port: p.port,
+      createdAt: p.created_at || new Date().toISOString(),
+    })));
+  } catch (error) {
+    console.error("Deployments fetch error:", error);
+    res.status(500).json({ error: "Internal Server Error" });
+  }
 });
 
 // ── All env vars ─────────────────────────────────────────────────────────────
@@ -778,6 +955,13 @@ const GITHUB_OAUTH_FILE = path.resolve(__dirname, 'github_oauth.json');
 const GITHUB_TOKEN_FILE = path.resolve(__dirname, 'github_token.json');
 
 function loadGitHubOauth() {
+  if (process.env.GITHUB_IMPORT_CLIENT_ID) {
+    return {
+      client_id: process.env.GITHUB_IMPORT_CLIENT_ID,
+      client_secret: process.env.GITHUB_IMPORT_CLIENT_SECRET,
+      homepage_url: process.env.GITHUB_IMPORT_HOMEPAGE_URL || "http://3.109.177.105"
+    };
+  }
   try {
     if (fs.existsSync(GITHUB_OAUTH_FILE)) {
       return JSON.parse(fs.readFileSync(GITHUB_OAUTH_FILE, 'utf-8'));
@@ -786,11 +970,11 @@ function loadGitHubOauth() {
   return {};
 }
 
-app.get('/api/auth/github', (req, res) => {
+app.get('/api/auth/github', requireAuth, (req, res) => {
   const config = loadGitHubOauth();
   if (!config.client_id) return res.status(400).send('OAuth client not configured');
-  const redirectUri = `http://13.233.87.37:5000/api/auth/github/callback`;
-  const githubUrl = `https://github.com/login/oauth/authorize?client_id=${config.client_id}&redirect_uri=${encodeURIComponent(redirectUri)}&scope=repo,user`;
+  const redirectUri = `http://3.109.177.105:5000/api/auth/github/callback`;
+  const githubUrl = `https://github.com/login/oauth/authorize?client_id=${config.client_id}&redirect_uri=${encodeURIComponent(redirectUri)}&scope=repo,user&state=${req.userId}`;
   res.redirect(githubUrl);
 });
 
@@ -819,7 +1003,11 @@ app.get('/api/auth/github/callback', async (req, res) => {
     }
 
     const accessToken = tokenData.access_token;
-    fs.writeFileSync(GITHUB_TOKEN_FILE, JSON.stringify({ access_token: accessToken }));
+    const userId = req.query.state;
+
+    if (accessToken && userId) {
+      await pool.query('UPDATE users SET github_token = $1 WHERE id = $2', [accessToken, userId]);
+    }
 
     res.send(`
       <script>
@@ -837,27 +1025,31 @@ app.get('/api/auth/github/callback', async (req, res) => {
   }
 });
 
-app.get('/api/auth/github/status', (req, res) => {
-  const connected = fs.existsSync(GITHUB_TOKEN_FILE);
-  res.json({ connected });
+app.get('/api/auth/github/status', requireAuth, async (req, res) => {
+  try {
+    const { rows } = await pool.query('SELECT github_token FROM users WHERE id = $1', [req.userId]);
+    const connected = rows.length > 0 && !!rows[0].github_token;
+    res.json({ connected });
+  } catch (err) {
+    res.json({ connected: false });
+  }
 });
 
-app.post('/api/auth/github/disconnect', (req, res) => {
+app.post('/api/auth/github/disconnect', requireAuth, async (req, res) => {
   try {
-    if (fs.existsSync(GITHUB_TOKEN_FILE)) {
-      fs.unlinkSync(GITHUB_TOKEN_FILE);
-    }
+    await pool.query('UPDATE users SET github_token = NULL WHERE id = $1', [req.userId]);
     res.json({ ok: true });
   } catch (e) {
     res.status(500).json({ error: 'Disconnect failed' });
   }
 });
 
-app.get('/api/github/repos', async (req, res) => {
+app.get('/api/github/repos', requireAuth, async (req, res) => {
   let token = '';
   try {
-    if (fs.existsSync(GITHUB_TOKEN_FILE)) {
-      token = JSON.parse(fs.readFileSync(GITHUB_TOKEN_FILE, 'utf-8')).access_token;
+    const { rows } = await pool.query('SELECT github_token FROM users WHERE id = $1', [req.userId]);
+    if (rows.length > 0 && rows[0].github_token) {
+      token = rows[0].github_token;
     }
   } catch (e) { }
 
@@ -897,19 +1089,28 @@ app.get('/api/github/repos', async (req, res) => {
 // ─────────────────────────────────────────────────────────────────────────────
 // REAL-TIME METRICS ENDPOINT (DOCKER CONTAINER STATS)
 // ─────────────────────────────────────────────────────────────────────────────
-app.get('/api/projects/:name/stats', (req, res) => {
+app.get('/api/projects/:name/stats', requireAuth, async (req, res) => {
   const { name } = req.params;
-  const projects = loadProjects();
-  const project = projects.find(p => p.name === name);
-  if (!project) return res.status(404).json({ error: 'Project not found' });
-
-  const containerName = project.container || name;
   try {
-    const out = execSync(`docker stats --no-stream --format '{"cpu":"{{.CPUPerc}}","memory":"{{.MemUsage}}","net":"{{.NetIO}}","memPerc":"{{.MemPerc}}"}' ${containerName} 2>/dev/null`, { timeout: 3000 }).toString();
-    if (!out.trim()) {
+    const { rows } = await pool.query('SELECT container FROM projects WHERE name = $1 AND user_id = $2', [name, req.userId]);
+    if (rows.length === 0) return res.status(403).json({ error: 'Unauthorized or not found' });
+    
+    const containerName = rows[0].container || name;
+    
+    let stats;
+    try {
+      const out = execSync(`docker stats --no-stream --format '{"cpu":"{{.CPUPerc}}","memory":"{{.MemUsage}}","net":"{{.NetIO}}","memPerc":"{{.MemPerc}}"}' ${containerName} 2>/dev/null`, { timeout: 3000 }).toString();
+      if (out.trim()) {
+        stats = JSON.parse(out.trim());
+      }
+    } catch (e) {
+      // Container is stopped or sleeping, return offline stats
+    }
+
+    if (!stats) {
       return res.json({ cpu: '0%', memory: '0B / 0B', net: '0B / 0B', memPerc: '0%', online: false });
     }
-    const stats = JSON.parse(out.trim());
+
     res.json({
       cpu: stats.cpu,
       memory: stats.memory,
@@ -918,7 +1119,7 @@ app.get('/api/projects/:name/stats', (req, res) => {
       online: true
     });
   } catch (e) {
-    res.json({ cpu: '0%', memory: '0B / 0B', net: '0B / 0B', memPerc: '0%', online: false });
+    res.status(500).json({ error: 'Internal Server Error' });
   }
 });
 
@@ -1034,8 +1235,7 @@ app.delete('/api/databases/:name', (req, res) => {
 // ─────────────────────────────────────────────────────────────────────────────
 // USER AUTHENTICATION (Google, GitHub)
 // ─────────────────────────────────────────────────────────────────────────────
-const JWT_SECRET = process.env.JWT_SECRET || "super_secret_jwt_key_12345";
-const API_URL = process.env.API_URL || "http://13.233.87.37:5000";
+const API_URL = process.env.API_URL || "http://3.109.177.105:5000";
 const FRONTEND_URL = process.env.FRONTEND_URL || "http://localhost:5174";
 
 // Google
@@ -1053,36 +1253,18 @@ const generateToken = (userId) => {
 };
 
 const sendPopupResponse = (res, token) => {
-  res.send(`
-    <html>
-      <body>
-        <script>
-          window.opener.postMessage({ type: 'AUTH_SUCCESS', token: '${token}' }, '*');
-          window.close();
-        </script>
-      </body>
-    </html>
-  `);
+  res.redirect(`${FRONTEND_URL}/auth/callback?token=${token}`);
 };
 
 const sendPopupError = (res, errorMsg) => {
-  res.send(`
-    <html>
-      <body>
-        <script>
-          window.opener.postMessage({ type: 'AUTH_ERROR', error: '${errorMsg}' }, '*');
-          window.close();
-        </script>
-      </body>
-    </html>
-  `);
+  res.redirect(`${FRONTEND_URL}/sign-in?error=${encodeURIComponent(errorMsg)}`);
 };
 
 // =======================
 // GOOGLE OAUTH
 // =======================
 app.get("/api/auth/google", (req, res) => {
-  const url = `https://accounts.google.com/o/oauth2/v2/auth?client_id=${GOOGLE_CLIENT_ID}&redirect_uri=${GOOGLE_REDIRECT_URI}&response_type=code&scope=email profile`;
+  const url = `https://accounts.google.com/o/oauth2/v2/auth?client_id=${GOOGLE_CLIENT_ID}&redirect_uri=${GOOGLE_REDIRECT_URI}&response_type=code&scope=email profile&prompt=select_account`;
   res.redirect(url);
 });
 
@@ -1137,7 +1319,7 @@ app.get("/api/auth/google/callback", async (req, res) => {
 // GITHUB OAUTH (USER LOGIN)
 // =======================
 app.get("/api/auth/github/user", (req, res) => {
-  const url = `https://github.com/login/oauth/authorize?client_id=${GITHUB_AUTH_CLIENT_ID}&redirect_uri=${GITHUB_AUTH_REDIRECT_URI}&scope=user:email`;
+  const url = `https://github.com/login/oauth/authorize?client_id=${GITHUB_AUTH_CLIENT_ID}&redirect_uri=${GITHUB_AUTH_REDIRECT_URI}&scope=user:email&prompt=select_account`;
   res.redirect(url);
 });
 
@@ -1226,5 +1408,64 @@ app.get("/api/auth/me", async (req, res) => {
     res.status(401).json({ error: "Invalid token" });
   }
 });
+
+// =======================
+// TEAM MEMBERS ROUTES
+// =======================
+app.get("/api/team", requireAuth, async (req, res) => {
+  try {
+    const { rows } = await pool.query('SELECT * FROM team_members WHERE owner_id = $1 ORDER BY joined_at DESC', [req.userId]);
+    // Format response
+    const formatted = rows.map(r => ({
+      id: r.id,
+      name: r.email.split('@')[0], // Mock name from email
+      email: r.email,
+      role: r.role,
+      has2fa: r.has_2fa,
+      joinedAt: new Date(r.joined_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+    }));
+    res.json(formatted);
+  } catch (error) {
+    console.error("Fetch team error", error);
+    res.status(500).json({ error: "Failed to fetch team" });
+  }
+});
+
+app.post("/api/team/invite", requireAuth, async (req, res) => {
+  const { email, role } = req.body;
+  if (!email) return res.status(400).json({ error: "Email required" });
+  
+  try {
+    const { rows } = await pool.query('SELECT COUNT(*) FROM team_members WHERE owner_id = $1', [req.userId]);
+    const currentCount = parseInt(rows[0].count, 10);
+    
+    // We already count the owner as 1 in the UI, so max 1 invite allowed for 2 total seats
+    if (currentCount >= 1) {
+      return res.status(402).json({ error: "Free limit reached. Upgrade to Pro for unlimited seats." });
+    }
+
+    const id = crypto.randomUUID();
+    await pool.query(
+      'INSERT INTO team_members (id, owner_id, email, role, has_2fa) VALUES ($1, $2, $3, $4, $5)',
+      [id, req.userId, email, role || 'Member', false]
+    );
+
+    res.json({ success: true, id });
+  } catch (error) {
+    console.error("Invite team error", error);
+    res.status(500).json({ error: "Failed to invite member" });
+  }
+});
+
+app.delete("/api/team/:id", requireAuth, async (req, res) => {
+  try {
+    await pool.query('DELETE FROM team_members WHERE id = $1 AND owner_id = $2', [req.params.id, req.userId]);
+    res.json({ success: true });
+  } catch (error) {
+    console.error("Delete team error", error);
+    res.status(500).json({ error: "Failed to delete member" });
+  }
+});
+
 
 

@@ -18,7 +18,7 @@ import {
   Trash2
 } from "lucide-react";
 import { AppShell } from "@/components/AppShell";
-import { fetchProjectsFromServer, type Project } from "@/lib/projects";
+import { fetchProjectsFromServer, addCustomDomainToServer, removeCustomDomainFromServer, checkCustomDomainStatusFromServer, checkDnsStatusFromServer, type Project } from "@/lib/projects";
 
 // Mock Data Types
 type DomainStatus = "active" | "pending_verification" | "failed";
@@ -32,7 +32,19 @@ interface CustomDomain {
   addedAt: number;
 }
 
-const EC2_IP = "13.233.87.37";
+const EC2_IP = "3.109.177.105";
+const CNAME_TARGET = "cname.cloudrik.com";
+
+function isSubdomain(domain: string): boolean {
+  const parts = domain.split(".");
+  return parts.length > 2;
+}
+
+function getSubdomainName(domain: string): string {
+  const parts = domain.split(".");
+  if (parts.length <= 2) return "@";
+  return parts.slice(0, parts.length - 2).join(".");
+}
 
 function useCopy() {
   const [copied, setCopied] = useState<string | null>(null);
@@ -53,9 +65,13 @@ export default function DomainsPage() {
   const [modalOpen, setModalOpen] = useState(false);
   const [step, setStep] = useState<1 | 2 | 3 | 4>(1);
   const [newDomain, setNewDomain] = useState("");
-  const [selectedProject, setSelectedProject] = useState("");
+  const [selectedProject, setSelectedProject] = useState(() => {
+    return localStorage.getItem("cloudrik-active-project") || "";
+  });
   const [verifying, setVerifying] = useState(false);
   const [verifyError, setVerifyError] = useState(false);
+  const [dnsState, setDnsState] = useState<{ root: boolean | null, www: boolean | null }>({ root: null, www: null });
+  const [listVerifyingId, setListVerifyingId] = useState<string | null>(null);
   
   const { copied, copy } = useCopy();
 
@@ -65,10 +81,17 @@ export default function DomainsPage() {
       const data = await fetchProjectsFromServer();
       setProjects(data);
       
-      const rawDomains = localStorage.getItem("zenith.custom_domains");
-      if (rawDomains) {
-        setCustomDomains(JSON.parse(rawDomains));
-      }
+      const domainsFromProjects: CustomDomain[] = data
+        .filter(p => p.customDomain)
+        .map(p => ({
+          id: p.name,
+          domain: p.customDomain!,
+          projectId: p.name,
+          projectName: p.name,
+          status: p.domainStatus === "active" ? "active" : "pending_verification",
+          addedAt: p.deployedAt
+        }));
+      setCustomDomains(domainsFromProjects);
     } finally {
       setLoading(false);
     }
@@ -78,7 +101,6 @@ export default function DomainsPage() {
 
   const saveDomains = (domains: CustomDomain[]) => {
     setCustomDomains(domains);
-    localStorage.setItem("zenith.custom_domains", JSON.stringify(domains));
   };
 
   const handleStartAddDomain = () => {
@@ -105,50 +127,55 @@ export default function DomainsPage() {
     setStep(3);
   };
 
-  const handleDone = () => {
-    // Save as pending and close
-    const proj = projects.find(p => p.name === selectedProject);
-    const newCustomDomain: CustomDomain = {
-      id: Math.random().toString(36).substring(7),
-      domain: newDomain,
-      projectId: selectedProject,
-      projectName: proj?.name || selectedProject,
-      status: "pending_verification",
-      addedAt: Date.now()
-    };
-    saveDomains([newCustomDomain, ...customDomains]);
+  const handleDone = async () => {
+    setVerifying(true);
+    await addCustomDomainToServer(selectedProject, newDomain);
+    await load(); // reload to show it in pending state
     closeModal();
   };
 
-  const handleVerify = () => {
+  const handleVerify = async () => {
     setVerifying(true);
     setVerifyError(false);
     
-    // Simulate DNS verification
-    setTimeout(() => {
-      // 80% chance of success for simulation
-      if (Math.random() > 0.2) {
-        const proj = projects.find(p => p.name === selectedProject);
-        const newCustomDomain: CustomDomain = {
-          id: Math.random().toString(36).substring(7),
-          domain: newDomain,
-          projectId: selectedProject,
-          projectName: proj?.name || selectedProject,
-          status: "active",
-          addedAt: Date.now()
-        };
-        saveDomains([newCustomDomain, ...customDomains]);
-        setVerifying(false);
-        setStep(4); // Success step
-      } else {
-        setVerifying(false);
-        setVerifyError(true);
-      }
-    }, 2500);
+    // Check DNS status first
+    // We haven't added the domain to the project yet on step 3 if they haven't clicked done.
+    // Wait, checkDnsStatusFromServer requires the project to have customDomain set!
+    // We should just call addCustomDomainToServer first so it saves, then check.
+    await addCustomDomainToServer(selectedProject, newDomain);
+    const dnsStatus = await checkDnsStatusFromServer(selectedProject);
+    setDnsState({ root: dnsStatus.rootVerified, www: dnsStatus.wwwVerified });
+    
+    if (dnsStatus.rootVerified && dnsStatus.wwwVerified) {
+      await load(); // update customDomains list
+      setVerifying(false);
+      setStep(4); // Success step
+    } else {
+      setVerifying(false);
+      setVerifyError(true);
+    }
   };
 
-  const removeDomain = (id: string) => {
-    saveDomains(customDomains.filter(d => d.id !== id));
+  const removeDomain = async (id: string) => {
+    const domainObj = customDomains.find(d => d.id === id);
+    if (domainObj) {
+      await removeCustomDomainFromServer(domainObj.projectId);
+      setCustomDomains(customDomains.filter(d => d.id !== id));
+    }
+  };
+
+  const handleVerifyList = async (projectName: string, domainName: string) => {
+    setListVerifyingId(projectName);
+    // Trigger backend check
+    await addCustomDomainToServer(projectName, domainName);
+    // Check SSL status
+    const status = await checkCustomDomainStatusFromServer(projectName);
+    if (status === "active") {
+      await load();
+    } else {
+      alert("Verification failed. The SSL certificate is not ready yet. Ensure DNS A-record points to our server, or wait a few minutes if Let's Encrypt is rate-limiting.");
+    }
+    setListVerifyingId(null);
   };
 
   return (
@@ -199,16 +226,21 @@ export default function DomainsPage() {
               <div className="col-span-3">Status</div>
               <div className="col-span-2 text-right">Actions</div>
             </div>
-            {customDomains.map((domain) => (
-              <div key={domain.id} className="flex flex-col border-b border-slate-100 last:border-0 hover:bg-slate-50/50 transition-colors">
+            {customDomains.map((domain) => {
+              const isSub = isSubdomain(domain.domain);
+              const recordType = isSub ? "CNAME" : "A";
+              const recordName = isSub ? getSubdomainName(domain.domain) : "@";
+              const recordValue = isSub ? CNAME_TARGET : EC2_IP;
+              return (
+                <div key={domain.id} className="flex flex-col border-b border-slate-100 last:border-0 hover:bg-slate-50/50 transition-colors">
                 <div className="grid grid-cols-12 gap-4 px-6 py-5 items-center">
                   <div className="col-span-4 flex items-center gap-3">
                     <div className="w-9 h-9 rounded-full bg-slate-100 flex items-center justify-center border border-slate-200">
                       <Globe className="w-4 h-4 text-slate-600" />
                     </div>
                     <div>
-                      <a href={`http://${domain.domain}`} target="_blank" rel="noreferrer" className="font-semibold text-sm text-slate-900 hover:text-sky-600 transition-colors flex items-center gap-1.5">
-                        {domain.domain}
+                      <a href={`https://www.${domain.domain.replace(/^www\./, '')}`} target="_blank" rel="noreferrer" className="font-semibold text-sm text-slate-900 hover:text-sky-600 transition-colors flex items-center gap-1.5">
+                        www.{domain.domain.replace(/^www\./, '')}
                         <ExternalLink className="w-3 h-3 text-slate-400" />
                       </a>
                     </div>
@@ -259,7 +291,7 @@ export default function DomainsPage() {
                           <span className="text-sm font-semibold text-slate-800">DNS Verification Required</span>
                         </div>
                       </div>
-                      <p className="text-xs text-slate-500 mb-4">Please add the following A record to your DNS provider to verify this domain.</p>
+                      <p className="text-xs text-slate-500 mb-4">Please add the following {recordType} record to your DNS provider to verify this domain.</p>
                       
                       <div className="grid grid-cols-3 gap-4 mb-2 text-xs font-semibold text-slate-400 uppercase tracking-wider">
                         <div>Type</div>
@@ -267,20 +299,37 @@ export default function DomainsPage() {
                         <div>Value</div>
                       </div>
                       <div className="grid grid-cols-3 gap-4 items-center bg-slate-50/50 p-2.5 rounded-lg border border-slate-100">
-                        <div className="text-sm font-medium text-slate-900">A</div>
-                        <div className="text-sm font-mono text-slate-600">@</div>
+                        <div className="text-sm font-medium text-slate-900">{recordType}</div>
+                        <div className="text-sm font-mono text-slate-600">{recordName}</div>
                         <div className="flex items-center gap-2">
-                          <span className="text-sm font-mono text-slate-900 bg-white px-2 py-1 border border-slate-200 rounded-md shadow-sm">{EC2_IP}</span>
-                          <button onClick={() => copy(EC2_IP, 'ip-' + domain.id)} className="p-1.5 hover:bg-slate-200 rounded-md text-slate-400 transition-colors bg-white border border-slate-200 shadow-sm">
+                          <span className="text-sm font-mono text-slate-900 bg-white px-2 py-1 border border-slate-200 rounded-md shadow-sm">{recordValue}</span>
+                          <button onClick={() => copy(recordValue, 'ip-' + domain.id)} className="p-1.5 hover:bg-slate-200 rounded-md text-slate-400 transition-colors bg-white border border-slate-200 shadow-sm">
                             {copied === 'ip-' + domain.id ? <Check className="w-3.5 h-3.5 text-emerald-500" /> : <Copy className="w-3.5 h-3.5" />}
                           </button>
                         </div>
+                      </div>
+                      <div className="mt-5 flex justify-end">
+                        <button
+                          onClick={() => handleVerifyList(domain.projectName, domain.domain)}
+                          disabled={listVerifyingId === domain.projectName}
+                          className="inline-flex items-center gap-2 h-9 px-5 rounded-lg bg-slate-900 text-white text-sm font-medium hover:bg-slate-800 disabled:opacity-70 transition-colors"
+                        >
+                          {listVerifyingId === domain.projectName ? (
+                            <>
+                              <Loader2 className="w-4 h-4 animate-spin" />
+                              Verifying...
+                            </>
+                          ) : (
+                            "Verify Domain"
+                          )}
+                        </button>
                       </div>
                     </div>
                   </div>
                 )}
               </div>
-            ))}
+            );
+            })}
           </div>
         )}
 
@@ -319,7 +368,7 @@ export default function DomainsPage() {
                               required
                               value={newDomain}
                               onChange={(e) => setNewDomain(e.target.value.toLowerCase().replace(/https?:\/\//, ''))}
-                              placeholder="example.com or app.example.com"
+                              placeholder="www.example.com"
                               className="w-full pl-10 pr-4 py-2.5 rounded-xl border border-slate-200 focus:border-sky-500 focus:ring-1 focus:ring-sky-500 transition-shadow bg-white text-sm text-slate-900 shadow-sm"
                               autoFocus
                             />
@@ -389,46 +438,76 @@ export default function DomainsPage() {
                     </motion.div>
                   )}
 
-                  {step === 3 && (
-                    <motion.div initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }}>
-                      <h2 className="text-2xl font-bold text-slate-900 mb-1">Configure DNS Records</h2>
-                      <p className="text-sm text-slate-500 mb-8">
-                        Add the following A record to your DNS provider (e.g. GoDaddy, Cloudflare) to point <span className="font-semibold text-slate-700">{newDomain}</span> to CloudRik.
-                      </p>
+                  {step === 3 && (() => {
+                    const rootDomain = newDomain.replace(/^www\./, '');
+                    return (
+                      <motion.div initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }}>
+                        <div className="flex items-center gap-2 mb-1">
+                          <h2 className="text-2xl font-bold text-slate-900">Mandatory DNS Setup</h2>
+                        </div>
+                        <p className="text-sm text-slate-500 mb-6">
+                          Add BOTH records to your DNS provider to connect <span className="font-semibold text-slate-700">{rootDomain}</span> to CloudRik.
+                        </p>
 
-                      <div className="space-y-4 mb-8">
-                        <div className="p-5 rounded-2xl border border-slate-200 bg-white shadow-sm">
-                          <div className="flex items-center gap-2 mb-4">
-                            <span className="px-2.5 py-1 rounded-md bg-blue-50 border border-blue-100 text-blue-700 text-xs font-bold tracking-wide">A RECORD</span>
+                        <div className="space-y-4 mb-6">
+                          {/* A Record */}
+                          <div className="p-4 rounded-xl border border-slate-200 bg-white shadow-sm">
+                            <div className="flex items-center justify-between mb-3">
+                              <span className="px-2.5 py-1 rounded-md bg-blue-50 border border-blue-100 text-blue-700 text-xs font-bold tracking-wide">1. A RECORD (Root Domain)</span>
+                              {dnsState.root === true && <span className="flex items-center gap-1 text-xs font-bold text-emerald-600"><CheckCircle2 className="w-3.5 h-3.5"/> Verified</span>}
+                              {dnsState.root === false && <span className="flex items-center gap-1 text-xs font-bold text-red-500"><XCircle className="w-3.5 h-3.5"/> Missing</span>}
+                            </div>
+                            <div className="grid grid-cols-3 gap-4 mb-2 text-xs font-semibold text-slate-400 uppercase tracking-wider">
+                              <div>Type</div>
+                              <div>Name</div>
+                              <div>Value</div>
+                            </div>
+                            <div className="grid grid-cols-3 gap-4 items-center bg-slate-50/50 p-2.5 rounded-lg border border-slate-100">
+                              <div className="text-sm font-medium text-slate-900">A</div>
+                              <div className="text-sm font-mono text-slate-600">@</div>
+                              <div className="flex items-center gap-2">
+                                <span className="text-sm font-mono text-slate-900 bg-white px-2 py-1 border border-slate-200 rounded-md shadow-sm">{EC2_IP}</span>
+                                <button onClick={() => copy(EC2_IP, 'ip')} className="p-1.5 hover:bg-slate-200 rounded-md text-slate-400 transition-colors bg-white border border-slate-200 shadow-sm">
+                                  {copied === 'ip' ? <Check className="w-3.5 h-3.5 text-emerald-500" /> : <Copy className="w-3.5 h-3.5" />}
+                                </button>
+                              </div>
+                            </div>
                           </div>
-                          
-                          <div className="grid grid-cols-3 gap-4 mb-2 text-xs font-semibold text-slate-400 uppercase tracking-wider">
-                            <div>Type</div>
-                            <div>Name</div>
-                            <div>Value</div>
-                          </div>
-                          <div className="grid grid-cols-3 gap-4 items-center bg-slate-50/50 p-3 rounded-xl border border-slate-100">
-                            <div className="text-sm font-medium text-slate-900">A</div>
-                            <div className="text-sm font-mono text-slate-600">@</div>
-                            <div className="flex items-center gap-2">
-                              <span className="text-sm font-mono text-slate-900 bg-white px-2.5 py-1.5 border border-slate-200 rounded-lg shadow-sm">{EC2_IP}</span>
-                              <button onClick={() => copy(EC2_IP, 'ip')} className="p-2 hover:bg-slate-200 rounded-lg text-slate-400 transition-colors bg-white border border-slate-200 shadow-sm">
-                                {copied === 'ip' ? <Check className="w-4 h-4 text-emerald-500" /> : <Copy className="w-4 h-4" />}
-                              </button>
+
+                          {/* CNAME Record */}
+                          <div className="p-4 rounded-xl border border-slate-200 bg-white shadow-sm">
+                            <div className="flex items-center justify-between mb-3">
+                              <span className="px-2.5 py-1 rounded-md bg-amber-50 border border-amber-100 text-amber-700 text-xs font-bold tracking-wide">2. CNAME RECORD (www)</span>
+                              {dnsState.www === true && <span className="flex items-center gap-1 text-xs font-bold text-emerald-600"><CheckCircle2 className="w-3.5 h-3.5"/> Verified</span>}
+                              {dnsState.www === false && <span className="flex items-center gap-1 text-xs font-bold text-red-500"><XCircle className="w-3.5 h-3.5"/> Missing</span>}
+                            </div>
+                            <div className="grid grid-cols-3 gap-4 mb-2 text-xs font-semibold text-slate-400 uppercase tracking-wider">
+                              <div>Type</div>
+                              <div>Name</div>
+                              <div>Value</div>
+                            </div>
+                            <div className="grid grid-cols-3 gap-4 items-center bg-slate-50/50 p-2.5 rounded-lg border border-slate-100">
+                              <div className="text-sm font-medium text-slate-900">CNAME</div>
+                              <div className="text-sm font-mono text-slate-600">www</div>
+                              <div className="flex items-center gap-2">
+                                <span className="text-sm font-mono text-slate-900 bg-white px-2 py-1 border border-slate-200 rounded-md shadow-sm">{CNAME_TARGET}</span>
+                                <button onClick={() => copy(CNAME_TARGET, 'cname')} className="p-1.5 hover:bg-slate-200 rounded-md text-slate-400 transition-colors bg-white border border-slate-200 shadow-sm">
+                                  {copied === 'cname' ? <Check className="w-3.5 h-3.5 text-emerald-500" /> : <Copy className="w-3.5 h-3.5" />}
+                                </button>
+                              </div>
                             </div>
                           </div>
                         </div>
-                      </div>
 
-                      {verifyError && (
-                        <div className="mb-6 p-4 rounded-xl bg-red-50 border border-red-200 flex gap-3 text-red-800">
-                          <AlertCircle className="w-5 h-5 shrink-0 mt-0.5" />
-                          <div className="text-sm">
-                            <p className="font-semibold">DNS verification failed</p>
-                            <p className="mt-0.5 opacity-90">We couldn't detect the correct DNS records. DNS changes can take up to 24 hours to propagate. Please ensure your records match the above and try again.</p>
+                        {verifyError && (
+                          <div className="mb-6 p-4 rounded-xl bg-red-50 border border-red-200 flex gap-3 text-red-800">
+                            <AlertCircle className="w-5 h-5 shrink-0 mt-0.5" />
+                            <div className="text-sm">
+                              <p className="font-semibold">DNS verification failed</p>
+                              <p className="mt-0.5 opacity-90">Please ensure BOTH records match the above exactly. DNS changes can take a few minutes to propagate.</p>
+                            </div>
                           </div>
-                        </div>
-                      )}
+                        )}
 
                       <div className="flex justify-between items-center pt-4">
                         <button
@@ -464,7 +543,8 @@ export default function DomainsPage() {
                         </div>
                       </div>
                     </motion.div>
-                  )}
+                    );
+                  })()}
 
                   {step === 4 && (
                     <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} className="text-center py-6">

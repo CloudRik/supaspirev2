@@ -69,13 +69,13 @@
 
 /* LIGHT MODE */
 :root {
-  --button-outline: rgba(0,0,0, .10);
-  --badge-outline: rgba(0,0,0, .05);
+  --button-outline: rgba(0, 0, 0, .10);
+  --badge-outline: rgba(0, 0, 0, .05);
 
   --opaque-button-border-intensity: -8;
 
-  --elevate-1: rgba(0,0,0, .03);
-  --elevate-2: rgba(0,0,0, .08);
+  --elevate-1: rgba(0, 0, 0, .03);
+  --elevate-2: rgba(0, 0, 0, .08);
 
   --background: 0 0% 100%;
   --foreground: 222 47% 6%;
@@ -98,7 +98,7 @@
   --destructive-foreground: 210 40% 98%;
   --input: 214.3 31.8% 91.4%;
   --ring: 190 95% 55%;
-  
+
   --chart-1: 12 76% 61%;
   --chart-2: 173 58% 39%;
   --chart-3: 197 37% 24%;
@@ -117,9 +117,9 @@
   --app-font-sans: 'Inter', sans-serif;
   --app-font-serif: Georgia, serif;
   --app-font-mono: 'JetBrains Mono', monospace;
-  --radius: .5rem; 
-  --shadow-2xs: 0px 2px 0px 0px hsl(202.8169 89.1213% 53.1373% / 0.00); 
-  --shadow-xs: 0px 2px 0px 0px hsl(202.8169 89.1213% 53.1373% / 0.00); 
+  --radius: .5rem;
+  --shadow-2xs: 0px 2px 0px 0px hsl(202.8169 89.1213% 53.1373% / 0.00);
+  --shadow-xs: 0px 2px 0px 0px hsl(202.8169 89.1213% 53.1373% / 0.00);
   --shadow-sm: 0px 2px 0px 0px hsl(202.8169 89.1213% 53.1373% / 0.00), 0px 1px 2px -1px hsl(202.8169 89.1213% 53.1373% / 0.00);
   --shadow: 0px 2px 0px 0px hsl(202.8169 89.1213% 53.1373% / 0.00), 0px 1px 2px -1px hsl(202.8169 89.1213% 53.1373% / 0.00);
   --shadow-md: 0px 2px 0px 0px hsl(202.8169 89.1213% 53.1373% / 0.00), 0px 2px 4px -1px hsl(202.8169 89.1213% 53.1373% / 0.00);
@@ -139,13 +139,13 @@
 }
 
 .dark {
-  --button-outline: rgba(255,255,255, .10);
-  --badge-outline: rgba(255,255,255, .05);
+  --button-outline: rgba(255, 255, 255, .10);
+  --badge-outline: rgba(255, 255, 255, .05);
 
-  --opaque-button-border-intensity: 9; 
+  --opaque-button-border-intensity: 9;
 
-  --elevate-1: rgba(255,255,255, .04);
-  --elevate-2: rgba(255,255,255, .09);
+  --elevate-1: rgba(255, 255, 255, .04);
+  --elevate-2: rgba(255, 255, 255, .09);
 
   --background: 222 47% 6%;
   --foreground: 210 20% 96%;
@@ -156,19 +156,19 @@
   --popover: 220 39% 8%;
   --popover-foreground: 210 20% 96%;
   --popover-border: 220 39% 15%;
-  
+
   --primary: 190 95% 55%;
   --primary-foreground: 222 47% 6%;
-  
+
   --secondary: 245 70% 60%;
   --secondary-foreground: 210 20% 96%;
-  
+
   --muted: 220 39% 15%;
   --muted-foreground: 215 20% 65%;
-  
+
   --accent: 38 92% 60%;
   --accent-foreground: 222 47% 6%;
-  
+
   --destructive: 0 62.8% 30.6%;
   --destructive-foreground: 210 40% 98%;
   --input: 220 39% 15%;
@@ -221,6 +221,7 @@
   }
 
   .no-default-hover-elevate {}
+
   .no-default-active-elevate {}
 
   .toggle-elevate::before,
@@ -277,5 +278,62 @@
   .border.active-elevate-2:not(.no-active-interaction-elevate)::after,
   .border.hover-elevate:not(.no-hover-interaction-elevate)::after {
     inset: -1px;
+  }
+
+  .thin-scrollbar::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+
+  .thin-scrollbar::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  .thin-scrollbar::-webkit-scrollbar-thumb {
+    background: rgba(0, 0, 0, 0.08);
+    border-radius: 9999px;
+  }
+
+  .thin-scrollbar::-webkit-scrollbar-thumb:hover {
+    background: rgba(0, 0, 0, 0.16);
+  }
+
+  .scrollbar-minimal {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(148, 163, 184, 0.12) transparent;
+  }
+
+  .scrollbar-minimal::-webkit-scrollbar {
+    width: 3px;
+    height: 3px;
+  }
+
+  .scrollbar-minimal::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  .scrollbar-minimal::-webkit-scrollbar-thumb {
+    background: rgba(148, 163, 184, 0.12);
+    border-radius: 9999px;
+  }
+
+  .scrollbar-minimal:hover::-webkit-scrollbar-thumb {
+    background: rgba(148, 163, 184, 0.28);
+  }
+
+  @keyframes slideInFromRight {
+    from {
+      transform: translateX(20px);
+      opacity: 0;
+    }
+
+    to {
+      transform: translateX(0);
+      opacity: 1;
+    }
+  }
+
+  .animate-slide-in {
+    animation: slideInFromRight 0.2s ease-out forwards;
   }
 }

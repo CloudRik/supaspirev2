@@ -1,0 +1,1 @@
+const jwt=require('jsonwebtoken'); const http=require('http'); const token=jwt.sign({userId:'c73f1da4-7023-431a-ad03-1a74897684a1'}, 'super_secret_jwt_key_12345'); const req=http.request('http://localhost:5000/api/projects/Bhai-Help-dev-v2-main/stats', {headers:{Authorization:'Bearer '+token}}, res=>{res.on('data', d=>console.log(d.toString()))}); req.end();

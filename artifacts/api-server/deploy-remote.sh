@@ -11,6 +11,23 @@ APP_NAME="app_$(date +%s%3N)"
 PERMANENT_DIR="/home/ubuntu/deploys/$APP_NAME"
 BUILD_DIR="/home/ubuntu/app_build"
 
+# ─────────────────────────────────────────────────────────────
+#  LOAD & EXPORT ENVIRONMENT VARIABLES FOR COMPILATION
+# ─────────────────────────────────────────────────────────────
+if [ -f "/home/ubuntu/backend/env_vars.json" ]; then
+  echo "Loading and exporting environment variables for $PROJECT_NAME..."
+  eval "$(python3 -c "
+import json, sys
+try:
+    data = json.load(open('/home/ubuntu/backend/env_vars.json'))
+    vs = data.get(sys.argv[1], {})
+    for k, v in vs.items():
+        if k:
+            print(f'export {k}=\"{v}\"')
+except: pass
+" "$PROJECT_NAME" 2>/dev/null || true)"
+fi
+
 echo "Starting Deployment..."
 echo "Repo: $REPO_URL"
 echo "Port: $PORT"
@@ -55,6 +72,11 @@ rm -rf "$BUILD_DIR" 2>/dev/null || sudo rm -rf "$BUILD_DIR"
 GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=echo git clone --depth=1 "$CLONE_URL" "$BUILD_DIR" 2>&1 || { echo "Repo clone failed — check the URL is correct, the repository is public, or check your GITHUB_TOKEN settings"; exit 1; }
 chown -R ubuntu:ubuntu "$BUILD_DIR" 2>/dev/null || true
 cd "$BUILD_DIR" || exit 1
+
+if [ -n "$ROOT_DIR" ] && [ "$ROOT_DIR" != "./" ] && [ "$ROOT_DIR" != "." ]; then
+  echo "Changing to custom root directory: $ROOT_DIR"
+  cd "$ROOT_DIR" || { echo "Root directory $ROOT_DIR not found"; exit 1; }
+fi
 
 # ─────────────────────────────────────────────────────────────
 #  FRAMEWORK DETECTION
@@ -239,8 +261,18 @@ case "$FRAMEWORK" in
     patch_vite_base "./package.json"
     echo "Building..."
     chmod -R +x ./node_modules/.bin/ 2>/dev/null || true
-    $PKG_MGR run build 2>&1 || { echo "Build failed"; exit 1; }
-    DIST_PATH=$(find_dist ".") || { echo "No build output found"; exit 1; }
+    if [ -n "$BUILD_CMD" ]; then
+      echo "Running custom build command: $BUILD_CMD"
+      eval "$BUILD_CMD" 2>&1 || { echo "Build failed"; exit 1; }
+    else
+      $PKG_MGR run build 2>&1 || { echo "Build failed"; exit 1; }
+    fi
+    
+    if [ -n "$OUTPUT_DIR" ]; then
+      DIST_PATH="$OUTPUT_DIR"
+    else
+      DIST_PATH=$(find_dist ".") || { echo "No build output found"; exit 1; }
+    fi
     DEPLOY_MODE="static"
     ;;
 
@@ -292,8 +324,18 @@ case "$FRAMEWORK" in
     install_node_deps "." || { echo "Install failed"; exit 1; }
     patch_ts "."
     echo "Building Next.js static export..."
-    $PKG_MGR run build 2>&1 || { echo "Build failed"; exit 1; }
-    DIST_PATH=$(find_dist ".") || { echo "No output found"; exit 1; }
+    if [ -n "$BUILD_CMD" ]; then
+      echo "Running custom build command: $BUILD_CMD"
+      eval "$BUILD_CMD" 2>&1 || { echo "Build failed"; exit 1; }
+    else
+      $PKG_MGR run build 2>&1 || { echo "Build failed"; exit 1; }
+    fi
+    
+    if [ -n "$OUTPUT_DIR" ]; then
+      DIST_PATH="$OUTPUT_DIR"
+    else
+      DIST_PATH=$(find_dist ".") || { echo "No output found"; exit 1; }
+    fi
     DEPLOY_MODE="static"
     ;;
 
@@ -441,7 +483,7 @@ case "$FRAMEWORK" in
     echo ""
     echo "Deployment Complete"
     echo "Container: $APP_NAME"
-    echo "Live at: http://13.233.87.37:$PORT"
+    echo "Live at: http://3.109.177.105:$PORT"
     exit 0
     ;;
 
@@ -582,4 +624,4 @@ echo "Deployment Complete"
 echo "Container: $APP_NAME"
 echo "Framework: $FRAMEWORK"
 echo "Mode: $DEPLOY_MODE"
-echo "Live at: http://13.233.87.37:$PORT"
+echo "Live at: http://3.109.177.105:$PORT"

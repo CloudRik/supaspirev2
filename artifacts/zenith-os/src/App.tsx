@@ -12,12 +12,22 @@ import Import from "@/pages/import";
 import Deploying from "@/pages/deploying";
 import ProjectDetail from "@/pages/project";
 import WebhookPage from "@/pages/webhook";
+import WebhooksPage from "@/pages/webhooks";
 import DeploymentsPage from "@/pages/deployments";
 import LogsPage from "@/pages/logs";
 import DomainsPage from "@/pages/domains";
 import EnvVarsPage from "@/pages/env-vars";
 import InfrastructurePage from "@/pages/infrastructure";
+import AuthCallback from "@/pages/auth-callback";
+import TeamPage from "@/pages/team";
+import AcceptInvitePage from "@/pages/accept-invite";
+import BillingPage from "@/pages/billing";
+import TokensPage from "@/pages/tokens";
 import { ProjectDeleteRoute } from "@/pages/project";
+import SupaspirePage from "@/pages/supaspire";
+import CdnPage from "@/pages/cdn";
+import AnalyticsPage from "@/pages/analytics";
+import FeatureFlagsPage from "@/pages/feature-flags";
 
 const queryClient = new QueryClient();
 
@@ -840,6 +850,7 @@ function Router() {
     <Switch>
       <Route path="/" component={Home} />
       <Route path="/sign-in" component={SignIn} />
+      <Route path="/auth/callback" component={AuthCallback} />
       <Route path="/dashboard" component={Dashboard} />
       <Route path="/import" component={Import} />
       <Route path="/deploying" component={Deploying} />
@@ -850,7 +861,17 @@ function Router() {
       <Route path="/logs" component={LogsPage} />
       <Route path="/domains" component={DomainsPage} />
       <Route path="/env" component={EnvVarsPage} />
+      <Route path="/webhooks" component={WebhooksPage} />
+      <Route path="/cdn" component={CdnPage} />
+      <Route path="/supaspire" component={SupaspirePage} />
       <Route path="/infrastructure" component={InfrastructurePage} />
+      <Route path="/team" component={TeamPage} />
+      <Route path="/billing" component={BillingPage} />
+      <Route path="/tokens" component={TokensPage} />
+      <Route path="/analytics" component={AnalyticsPage} />
+      <Route path="/:name/feature-flags" component={FeatureFlagsPage} />
+      <Route path="/feature-flags" component={FeatureFlagsPage} />
+      <Route path="/accept-invite" component={AcceptInvitePage} />
       <Route component={NotFound} />
     </Switch>
   );

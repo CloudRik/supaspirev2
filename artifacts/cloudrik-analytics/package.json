@@ -1,0 +1,15 @@
+{
+  "name": "@cloudrik/analytics",
+  "version": "1.0.0",
+  "description": "CloudRik Analytics SDK",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc"
+  },
+  "peerDependencies": {
+    "react": "^18.0.0"
+  },
+  "dependencies": {},
+  "author": "Zenith OS",
+  "license": "MIT"
+}

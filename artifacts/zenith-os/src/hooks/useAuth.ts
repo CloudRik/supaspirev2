@@ -6,7 +6,9 @@ interface User {
   name: string;
   email: string;
   avatarUrl?: string;
+  avatar_url?: string;
   provider: string;
+  workspaceRole?: string;
 }
 
 interface AuthState {

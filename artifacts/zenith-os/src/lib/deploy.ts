@@ -2,6 +2,8 @@ export const DEPLOY_API_URL = "/api-proxy/deploy";
 export const DEPLOY_STREAM_URL = "/api-proxy/deploy/stream";
 export const PROJECTS_API_URL = "/api-proxy/projects";
 export const WEBHOOK_INFO_URL = "/api-proxy/webhook/info";
+export const WEBHOOK_PING_STATUS_URL = "/api-proxy/webhook/ping-status";
+export const WEBHOOK_DELIVERIES_URL = "/api-proxy/webhook/deliveries";
 export const ENV_VARS_API_URL = "/api-proxy/projects";
 
 export type WebhookInfo = {
@@ -11,10 +13,84 @@ export type WebhookInfo = {
   slug: string;
 };
 
-export async function getWebhookInfo(projectName: string): Promise<WebhookInfo> {
-  const res = await fetch(`${WEBHOOK_INFO_URL}/${encodeURIComponent(projectName)}`);
+export type WebhookPingStatus = {
+  verified: boolean;
+  verifiedAt: string | null;
+  source: string | null;
+};
+
+export type WebhookDelivery = {
+  id: string;
+  event: string;
+  status: "building" | "success" | "failed";
+  branch: string;
+  commit: string;
+  message: string;
+  author: string;
+  pusher: string;
+  repo: string;
+  compareUrl: string;
+  timestamp: string;
+  completedAt: string | null;
+};
+
+import { getAuthToken } from "./projects";
+
+export async function getWebhookInfo(projectName: string): Promise<WebhookInfo | null> {
+  const token = getAuthToken();
+  const workspaceId = localStorage.getItem("cloudrik-workspace");
+  let url = `${WEBHOOK_INFO_URL}/${encodeURIComponent(projectName)}`;
+  if (workspaceId) url += `?workspaceId=${workspaceId}`;
+
+  const res = await fetch(url, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {}
+  });
+  if (res.status === 404) return null;
   if (!res.ok) throw new Error("Failed to fetch webhook info");
   return res.json() as Promise<WebhookInfo>;
+}
+
+export async function generateWebhook(projectName: string): Promise<WebhookInfo> {
+  const token = getAuthToken();
+  const workspaceId = localStorage.getItem("cloudrik-workspace");
+  let url = `${WEBHOOK_INFO_URL}/${encodeURIComponent(projectName)}`;
+  if (workspaceId) url += `?workspaceId=${workspaceId}`;
+
+  const res = await fetch(url, {
+    method: "POST",
+    headers: token ? { Authorization: `Bearer ${token}` } : {}
+  });
+  if (!res.ok) throw new Error("Failed to generate webhook credentials");
+  return res.json() as Promise<WebhookInfo>;
+}
+
+/** Check if a real GitHub ping has arrived for this project's webhook */
+export async function getWebhookPingStatus(projectName: string): Promise<WebhookPingStatus> {
+  const token = getAuthToken();
+  const workspaceId = localStorage.getItem("cloudrik-workspace");
+  let url = `${WEBHOOK_PING_STATUS_URL}/${encodeURIComponent(projectName)}`;
+  if (workspaceId) url += `?workspaceId=${workspaceId}`;
+
+  const res = await fetch(url, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {}
+  });
+  if (!res.ok) return { verified: false, verifiedAt: null, source: null };
+  return res.json() as Promise<WebhookPingStatus>;
+}
+
+/** Fetch real GitHub push delivery logs for a project */
+export async function getWebhookDeliveries(projectName: string): Promise<WebhookDelivery[]> {
+  const token = getAuthToken();
+  const workspaceId = localStorage.getItem("cloudrik-workspace");
+  let url = `${WEBHOOK_DELIVERIES_URL}/${encodeURIComponent(projectName)}`;
+  if (workspaceId) url += `?workspaceId=${workspaceId}`;
+
+  const res = await fetch(url, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {}
+  });
+  if (!res.ok) return [];
+  const data = await res.json() as { deliveries: WebhookDelivery[] };
+  return data.deliveries || [];
 }
 
 // ── Environment Variables ────────────────────────────────────────────────────
@@ -22,26 +98,48 @@ export async function getWebhookInfo(projectName: string): Promise<WebhookInfo> 
 export type EnvVars = Record<string, string>;
 
 export async function getEnvVars(projectName: string): Promise<EnvVars> {
-  const res = await fetch(`${ENV_VARS_API_URL}/${encodeURIComponent(projectName)}/env`, {
+  const token = getAuthToken();
+  const workspaceId = localStorage.getItem("cloudrik-workspace");
+  let url = `${ENV_VARS_API_URL}/${encodeURIComponent(projectName)}/env`;
+  if (workspaceId) url += `?workspaceId=${workspaceId}`;
+
+  const res = await fetch(url, {
     signal: AbortSignal.timeout(8000),
+    headers: token ? { Authorization: `Bearer ${token}` } : {}
   });
   if (!res.ok) throw new Error("Failed to fetch env vars");
   return res.json() as Promise<EnvVars>;
 }
 
 export async function saveEnvVars(projectName: string, vars: EnvVars): Promise<void> {
-  const res = await fetch(`${ENV_VARS_API_URL}/${encodeURIComponent(projectName)}/env`, {
+  const token = getAuthToken();
+  const workspaceId = localStorage.getItem("cloudrik-workspace");
+  let url = `${ENV_VARS_API_URL}/${encodeURIComponent(projectName)}/env`;
+  if (workspaceId) url += `?workspaceId=${workspaceId}`;
+
+  const res = await fetch(url, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { 
+      "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {})
+    },
     body: JSON.stringify({ vars }),
   });
   if (!res.ok) throw new Error("Failed to save env vars");
 }
 
 export async function deleteEnvVar(projectName: string, key: string): Promise<void> {
+  const token = getAuthToken();
+  const workspaceId = localStorage.getItem("cloudrik-workspace");
+  let url = `${ENV_VARS_API_URL}/${encodeURIComponent(projectName)}/env/${encodeURIComponent(key)}`;
+  if (workspaceId) url += `?workspaceId=${workspaceId}`;
+
   const res = await fetch(
-    `${ENV_VARS_API_URL}/${encodeURIComponent(projectName)}/env/${encodeURIComponent(key)}`,
-    { method: "DELETE" }
+    url,
+    { 
+      method: "DELETE",
+      headers: token ? { Authorization: `Bearer ${token}` } : {}
+    }
   );
   if (!res.ok) throw new Error("Failed to delete env var");
 }
@@ -95,7 +193,8 @@ function extractErrorMessage(payload: DeployApiPayload, fallback: string): strin
   return fallback;
 }
 
-export function normalizeUrlForDisplay(value: string): string {
+export function normalizeUrlForDisplay(value?: string | null): string {
+  if (!value) return "";
   const trimmed = value.trim();
   if (/^https?:\/\//i.test(trimmed)) return trimmed;
   if (/^\d+\.\d+\.\d+\.\d+(:\d+)?/.test(trimmed)) return `http://${trimmed}`;
@@ -114,9 +213,13 @@ export type StreamEvent =
 export function streamDeployment(
   repo: string,
   onEvent: (event: StreamEvent) => void,
-  onError: (err: Error) => void
+  onError: (err: Error) => void,
+  projectName?: string
 ): () => void {
-  const url = `${DEPLOY_STREAM_URL}?repo=${encodeURIComponent(repo)}`;
+  const token = getAuthToken();
+  const tokenParam = token ? `&token=${encodeURIComponent(token)}` : "";
+  const nameParam = projectName ? `&name=${encodeURIComponent(projectName)}` : "";
+  const url = `${DEPLOY_STREAM_URL}?repo=${encodeURIComponent(repo)}${nameParam}${tokenParam}`;
   const es = new EventSource(url);
 
   es.onmessage = (e) => {
@@ -138,9 +241,13 @@ export function streamDeployment(
 }
 
 export async function requestDeployment(repo: string): Promise<DeployApiResult> {
+  const token = getAuthToken();
   const response = await fetch(DEPLOY_API_URL, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { 
+      "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {})
+    },
     body: JSON.stringify({ repo }),
   });
 

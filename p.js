@@ -1,0 +1,1 @@
+const {Pool}=require('pg'); const p=new Pool({connectionString:'postgresql://zenith:zenith_password_123@127.0.0.1:5432/zenith_db'}); p.query('SELECT name, port, container FROM projects').then(res => {console.log(res.rows); process.exit(0)});

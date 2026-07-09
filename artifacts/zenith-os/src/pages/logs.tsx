@@ -13,7 +13,8 @@ import {
   WifiOff,
 } from "lucide-react";
 import { AppShell } from "@/components/AppShell";
-import { fetchProjectsFromServer, type Project } from "@/lib/projects";
+import { fetchProjectsFromServer, getAuthToken, type Project } from "@/lib/projects";
+import { useProjectStore } from "@/hooks/useProject";
 
 const LOGS_URL = "/api-proxy/projects";
 const STREAM_URL = "/api-proxy/projects";
@@ -31,15 +32,21 @@ function makeLine(text: string): LogLine {
 }
 
 const LINE_COLORS: Record<string, string> = {
-  error: "text-red-400",
-  warn:  "text-amber-400",
-  info:  "text-emerald-400",
-  plain: "text-slate-300",
+  error: "text-red-500 font-medium",
+  warn:  "text-amber-500",
+  info:  "text-emerald-500",
+  plain: "text-slate-700",
 };
 
 async function fetchLogs(projectName: string, lines = 200): Promise<string[]> {
-  const res = await fetch(`${LOGS_URL}/${encodeURIComponent(projectName)}/logs?lines=${lines}`, {
+  const token = getAuthToken();
+  const workspaceId = localStorage.getItem("cloudrik-workspace");
+  let url = `${LOGS_URL}/${encodeURIComponent(projectName)}/logs?lines=${lines}`;
+  if (workspaceId) url += `&workspaceId=${workspaceId}`;
+
+  const res = await fetch(url, {
     signal: AbortSignal.timeout(8000),
+    headers: token ? { "Authorization": `Bearer ${token}` } : {}
   });
   if (!res.ok) return [];
   const data = await res.json() as { logs: string[] };
@@ -50,9 +57,12 @@ export default function LogsPage() {
   const search = useSearch();
   const preselect = new URLSearchParams(search).get("project") || "";
 
+  const { activeProject, setActiveProject } = useProjectStore();
   const [projects, setProjects]         = useState<Project[]>([]);
   const [loadingProjects, setLPrj]      = useState(true);
-  const [selected, setSelected]         = useState<string>(preselect);
+  const [selected, setSelected]         = useState<string>(() => {
+    return preselect || activeProject || "";
+  });
   const [lines, setLines]               = useState<LogLine[]>([]);
   const [loadingLogs, setLoadingLogs]   = useState(false);
   const [streaming, setStreaming]       = useState(false);
@@ -64,12 +74,22 @@ export default function LogsPage() {
   const esRef       = useRef<EventSource | null>(null);
   const autoScrollRef = useRef(true);
 
+  // Sync selected project with global active project
+  useEffect(() => {
+    if (activeProject) {
+      setSelected(activeProject);
+    }
+  }, [activeProject]);
+
   // Load projects once; if no preselect, default to first
   useEffect(() => {
     fetchProjectsFromServer()
       .then((data) => {
         setProjects(data);
-        if (!preselect && data.length > 0) setSelected(data[0].name);
+        if (!preselect && !activeProject && data.length > 0) {
+          setSelected(data[0].name);
+          setActiveProject(data[0].name);
+        }
       })
       .finally(() => setLPrj(false));
   }, []); // eslint-disable-line
@@ -103,7 +123,11 @@ export default function LogsPage() {
     setConnected(false);
     setStreaming(true);
 
-    const url = `${STREAM_URL}/${encodeURIComponent(selected)}/logs/stream?tail=80`;
+    const token = getAuthToken();
+    const workspaceId = localStorage.getItem("cloudrik-workspace");
+    let url = `${STREAM_URL}/${encodeURIComponent(selected)}/logs/stream?tail=80&token=${token || ""}`;
+    if (workspaceId) url += `&workspaceId=${workspaceId}`;
+    
     const es = new EventSource(url);
     esRef.current = es;
 
@@ -198,6 +222,7 @@ export default function LogsPage() {
                         onClick={() => {
                           if (streaming) stopStream();
                           setSelected(p.name);
+                          setActiveProject(p.name);
                           setDropdownOpen(false);
                         }}
                         className={`w-full flex items-center gap-2 px-3 py-2 text-sm font-medium transition-colors ${
@@ -317,45 +342,45 @@ export default function LogsPage() {
         )}
 
         {/* ── Terminal window ── */}
-        <div className="flex-1 bg-slate-950 rounded-2xl border border-slate-800 overflow-hidden shadow-2xl flex flex-col min-h-[420px]">
+        <div className="flex-1 bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-sm flex flex-col min-h-[420px]">
           {/* Title bar */}
-          <div className="flex items-center gap-2 px-4 py-2.5 border-b border-slate-800 bg-slate-900/60 shrink-0">
-            <div className="w-3 h-3 rounded-full bg-red-500/70" />
-            <div className="w-3 h-3 rounded-full bg-yellow-500/70" />
-            <div className="w-3 h-3 rounded-full bg-green-500/70" />
-            <span className="ml-2 text-xs font-mono text-slate-400">
+          <div className="flex items-center gap-2 px-4 py-2.5 border-b border-slate-100 bg-slate-50 shrink-0">
+            <div className="w-3 h-3 rounded-full bg-red-400" />
+            <div className="w-3 h-3 rounded-full bg-amber-400" />
+            <div className="w-3 h-3 rounded-full bg-emerald-400" />
+            <span className="ml-2 text-xs font-mono text-slate-500">
               {selected ? `${selected} — logs` : "select a project"}
             </span>
             {streaming && connected && (
-              <span className="ml-auto inline-flex items-center gap-1 text-[10px] font-mono text-emerald-400">
-                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping" />
+              <span className="ml-auto inline-flex items-center gap-1 text-[10px] font-mono text-emerald-600">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-ping" />
                 LIVE
               </span>
             )}
-            {loadingLogs && <Loader2 className="w-3.5 h-3.5 animate-spin text-slate-500 ml-auto" />}
+            {loadingLogs && <Loader2 className="w-3.5 h-3.5 animate-spin text-slate-400 ml-auto" />}
           </div>
 
           {/* Log content */}
-          <div className="flex-1 overflow-y-auto p-4 font-mono text-xs leading-relaxed">
+          <div className="flex-1 overflow-y-auto p-4 font-mono text-xs leading-relaxed bg-white">
             {!selected && (
-              <div className="flex flex-col items-center justify-center h-full gap-2 text-slate-600">
+              <div className="flex flex-col items-center justify-center h-full gap-2 text-slate-400">
                 <Terminal className="w-8 h-8 opacity-30" />
                 <p>Select a project to view logs</p>
               </div>
             )}
             {selected && loadingLogs && lines.length === 0 && (
-              <div className="flex items-center gap-2 text-slate-500 justify-center h-full">
+              <div className="flex items-center gap-2 text-slate-400 justify-center h-full">
                 <Loader2 className="w-4 h-4 animate-spin" />
                 <span>Loading logs…</span>
               </div>
             )}
             {selected && !loadingLogs && lines.length === 0 && !streaming && (
-              <div className="flex flex-col items-center justify-center h-full gap-2 text-slate-600">
+              <div className="flex flex-col items-center justify-center h-full gap-2 text-slate-500">
                 <AlertTriangle className="w-6 h-6 opacity-40" />
                 <p>No logs — container may be idle</p>
                 <button
                   onClick={handleToggleLive}
-                  className="mt-2 inline-flex items-center gap-1.5 h-8 px-3 rounded-lg bg-slate-800 text-white text-xs font-medium hover:bg-slate-700 transition-colors"
+                  className="mt-2 inline-flex items-center gap-1.5 h-8 px-3 rounded-lg bg-slate-100 border border-slate-200 text-slate-700 text-xs font-medium hover:bg-slate-200 transition-colors"
                 >
                   <Radio className="w-3 h-3" /> Start Live Stream
                 </button>
@@ -363,14 +388,14 @@ export default function LogsPage() {
             )}
             {selected && !loadingLogs && lines.length === 0 && streaming && (
               <div className="flex items-center gap-2 text-slate-500 justify-center h-full">
-                <Radio className="w-4 h-4 animate-pulse text-emerald-400" />
+                <Radio className="w-4 h-4 animate-pulse text-emerald-500" />
                 <span>Waiting for new log lines…</span>
               </div>
             )}
 
             {lines.map((line, i) => (
-              <div key={line.id} className={`flex gap-2 ${LINE_COLORS[line.type]} hover:bg-white/5 rounded px-1 -mx-1 py-0.5 group`}>
-                <span className="text-slate-700 shrink-0 select-none w-8 text-right group-hover:text-slate-500">{i + 1}</span>
+              <div key={line.id} className={`flex gap-2 ${LINE_COLORS[line.type]} hover:bg-slate-50 rounded px-1 -mx-1 py-0.5 group transition-colors`}>
+                <span className="text-slate-300 shrink-0 select-none w-8 text-right group-hover:text-slate-400">{i + 1}</span>
                 <span className="break-all whitespace-pre-wrap">{line.text}</span>
               </div>
             ))}

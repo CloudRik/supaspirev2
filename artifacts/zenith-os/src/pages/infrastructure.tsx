@@ -13,7 +13,7 @@ import {
   Zap,
 } from "lucide-react";
 import { AppShell } from "@/components/AppShell";
-import { fetchProjectsFromServer, type Project } from "@/lib/projects";
+import { fetchProjectsFromServer, getAuthToken, type Project } from "@/lib/projects";
 
 const STATS_URL = "/api-proxy/stats";
 
@@ -157,7 +157,15 @@ export default function InfrastructurePage() {
 
   const fetchStats = useCallback(async () => {
     try {
-      const res = await fetch(STATS_URL, { signal: AbortSignal.timeout(15000) });
+      const token = getAuthToken();
+      const workspaceId = localStorage.getItem("cloudrik-workspace");
+      let url = STATS_URL;
+      if (workspaceId) url += `?workspaceId=${workspaceId}`;
+
+      const res = await fetch(url, { 
+        signal: AbortSignal.timeout(15000),
+        headers: token ? { Authorization: `Bearer ${token}` } : {}
+      });
       if (!res.ok) return;
       const data = await res.json() as ContainerStat[];
       setStats(data);

@@ -45,7 +45,7 @@ export default defineConfig({
   },
   root: path.resolve(import.meta.dirname),
   build: {
-    outDir: path.resolve(import.meta.dirname, "dist/public"),
+    outDir: path.resolve(import.meta.dirname, "dist"),
     emptyOutDir: true,
   },
   server: {
@@ -58,7 +58,7 @@ export default defineConfig({
     },
     proxy: {
       "/api-proxy": {
-        target: "http://13.233.87.37:5000",
+        target: "http://3.109.177.105:5000",
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/api-proxy/, ""),
         proxyTimeout: 300000,

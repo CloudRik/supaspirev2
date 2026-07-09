@@ -1,0 +1,3363 @@
+diff --git a/artifacts/api-server/deploy-remote.sh b/artifacts/api-server/deploy-remote.sh
+index 6c7e002..d8323c6 100644
+--- a/artifacts/api-server/deploy-remote.sh
++++ b/artifacts/api-server/deploy-remote.sh
+@@ -11,6 +11,23 @@ APP_NAME="app_$(date +%s%3N)"
+ PERMANENT_DIR="/home/ubuntu/deploys/$APP_NAME"
+ BUILD_DIR="/home/ubuntu/app_build"
+ 
++# ─────────────────────────────────────────────────────────────
++#  LOAD & EXPORT ENVIRONMENT VARIABLES FOR COMPILATION
++# ─────────────────────────────────────────────────────────────
++if [ -f "/home/ubuntu/backend/env_vars.json" ]; then
++  echo "Loading and exporting environment variables for $PROJECT_NAME..."
++  eval "$(python3 -c "
++import json, sys
++try:
++    data = json.load(open('/home/ubuntu/backend/env_vars.json'))
++    vs = data.get(sys.argv[1], {})
++    for k, v in vs.items():
++        if k:
++            print(f'export {k}=\"{v}\"')
++except: pass
++" "$PROJECT_NAME" 2>/dev/null || true)"
++fi
++
+ echo "Starting Deployment..."
+ echo "Repo: $REPO_URL"
+ echo "Port: $PORT"
+diff --git a/artifacts/api-server/github_oauth.json b/artifacts/api-server/github_oauth.json
+index d0663d7..23c9654 100644
+--- a/artifacts/api-server/github_oauth.json
++++ b/artifacts/api-server/github_oauth.json
+@@ -1,5 +1,5 @@
+ {
+-  "client_id": "Ov23ct4diNNg5DlrmH5z",
+-  "client_secret": "ee7627ed2dcc947a8870b7aade3380bb7684f829",
++  "client_id": "Ov23liUBOE58nszEb272",
++  "client_secret": "2e13095be9c5602e2dbf0b6976748c66ccfd609d",
+   "homepage_url": "http://13.233.87.37"
+ }
+\ No newline at end of file
+diff --git a/artifacts/api-server/server-remote.cjs b/artifacts/api-server/server-remote.cjs
+index 6cce40c..53387d2 100644
+--- a/artifacts/api-server/server-remote.cjs
++++ b/artifacts/api-server/server-remote.cjs
+@@ -23,6 +23,56 @@ pool.query(`
+   )
+ `).catch(console.error);
+ 
++pool.query(`
++  CREATE TABLE IF NOT EXISTS projects (
++    id SERIAL PRIMARY KEY,
++    user_id VARCHAR(36) REFERENCES users(id) ON DELETE CASCADE,
++    name VARCHAR(255) NOT NULL,
++    slug VARCHAR(255) NOT NULL UNIQUE,
++    repo VARCHAR(255) NOT NULL,
++    port INTEGER NOT NULL,
++    container VARCHAR(255),
++    status VARCHAR(50) DEFAULT 'running',
++    framework VARCHAR(100),
++    deploy_mode VARCHAR(50),
++    url VARCHAR(255),
++    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
++    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
++  )
++`).catch(console.error);
++
++pool.query(`
++  CREATE TABLE IF NOT EXISTS team_members (
++    id VARCHAR(36) PRIMARY KEY,
++    owner_id VARCHAR(36) REFERENCES users(id) ON DELETE CASCADE,
++    email VARCHAR(255) NOT NULL,
++    role VARCHAR(50) DEFAULT 'Member',
++    has_2fa BOOLEAN DEFAULT false,
++    joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
++  )
++`).catch(console.error);
++
++const JWT_SECRET = process.env.JWT_SECRET || "super_secret_jwt_key_12345";
++
++const requireAuth = (req, res, next) => {
++  let token;
++  if (req.headers.authorization) {
++    token = req.headers.authorization.split(" ")[1];
++  } else if (req.query.token) {
++    token = req.query.token;
++  }
++  
++  if (!token) return res.status(401).json({ error: "No token provided" });
++  
++  try {
++    const decoded = jwt.verify(token, JWT_SECRET);
++    req.userId = decoded.userId;
++    next();
++  } catch (err) {
++    res.status(401).json({ error: "Invalid token" });
++  }
++};
++
+ 
+ const app = express();
+ const PUBLIC_IP = '13.233.87.37';
+@@ -79,7 +129,7 @@ function processQueue() {
+     text.split('\n').filter(l => l.trim()).forEach(line => job.send({ type: 'log', line }));
+   });
+ 
+-  child.on('close', function (code) {
++  child.on('close', async function (code) {
+     clearInterval(job.heartbeat);
+     const liveUrl = 'http://' + PUBLIC_IP + ':' + job.port + '/';
+     const containerName = actualContainer || ('app_' + Date.now());
+@@ -96,6 +146,26 @@ function processQueue() {
+     saveProjects(allProjects);
+     if (code === 0) regenerateNginxConfig();
+ 
++    try {
++      if (job.userId) {
++         await pool.query(`
++           INSERT INTO projects (user_id, name, slug, repo, port, container, status, framework, deploy_mode, url, last_accessed)
++           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, CURRENT_TIMESTAMP)
++           ON CONFLICT (slug) DO UPDATE SET
++             status = EXCLUDED.status,
++             port = EXCLUDED.port,
++             container = EXCLUDED.container,
++             framework = EXCLUDED.framework,
++             deploy_mode = EXCLUDED.deploy_mode,
++             url = EXCLUDED.url,
++             updated_at = CURRENT_TIMESTAMP,
++             last_accessed = CURRENT_TIMESTAMP
++         `, [job.userId, job.repoName, job.slug, job.repo, job.port, containerName, project.status, framework, deployMode, liveUrl]);
++      }
++    } catch(err) {
++      console.error("DB Insert error:", err);
++    }
++
+     job.send({ type: 'done', success: code === 0, url: code === 0 ? liveUrl : null, project, framework });
+     job.res.end();
+ 
+@@ -154,12 +224,14 @@ function cleanDeployDir(containerName) {
+   try { if (fs.existsSync(dir)) execSync('rm -rf ' + dir, { stdio: 'ignore' }); } catch { }
+ }
+ function regenerateNginxConfig() {
+-  const projects = loadProjects().filter(p => p.status === 'running');
++  const allProjects = loadProjects();
+   let locations = '';
+-  for (const p of projects) {
++
++  for (const p of allProjects) {
+     const slug = (p.slug || p.name).replace(/[^a-zA-Z0-9_-]/g, '-').toLowerCase();
+     locations += '\n    location /' + slug + '/ {\n        proxy_pass http://127.0.0.1:' + p.port + '/;\n        proxy_http_version 1.1;\n        proxy_set_header Upgrade $http_upgrade;\n        proxy_set_header Connection \'upgrade\';\n        proxy_set_header Host $host;\n        proxy_cache_bypass $http_upgrade;\n    }';
+   }
++  
+   const config = 'server {\n    listen 80;\n    server_name _;\n    location / {\n        return 200 \'ZenithOS Deployment Server\';\n        add_header Content-Type text/plain;\n    }\n' + locations + '\n}';
+   try {
+     fs.writeFileSync('/tmp/zenith_nginx.conf', config);
+@@ -254,14 +326,24 @@ function runDeploy(repo, res, isStream) {
+   }
+ }
+ 
+-app.get('/', (_req, res) => res.json({ status: 'ZenithOS Backend Running', ip: PUBLIC_IP }));
++app.get('/', (_req, res) => res.json({ status: 'ZenithOS Backend Running', ip: PUBLIC_IP, serverless: true }));
+ app.get('/api/test', (_req, res) => res.json({ message: 'API working', ip: PUBLIC_IP }));
+-app.get('/projects', (_req, res) => res.json(loadProjects()));
++
++
++app.get('/projects', requireAuth, async (req, res) => {
++  try {
++    const { rows } = await pool.query('SELECT * FROM projects WHERE user_id = $1 ORDER BY created_at DESC', [req.userId]);
++    res.json(rows);
++  } catch (error) {
++    console.error('Error fetching projects:', error);
++    res.status(500).json({ error: 'Internal server error' });
++  }
++});
+ app.get('/queue', (_req, res) => res.json({ running: deployRunning, queued: deployQueue.length, total: deployQueue.length + (deployRunning ? 1 : 0), projects: deployQueue.map((j, i) => ({ name: j.repoName, position: i + 2 })) }));
+ 
+ 
+ // SSE streaming endpoint
+-app.get('/deploy/stream', (req, res) => {
++app.get('/deploy/stream', requireAuth, (req, res) => {
+   let repo = req.query.repo;
+   if (!repo) { res.status(400).end(); return; }
+ 
+@@ -313,7 +395,7 @@ app.get('/deploy/stream', (req, res) => {
+     send({ type: 'queued', position: queuePos + 1, total: queuePos + 1 });
+   }
+ 
+-  const job = { repo, port, repoName, slug, existing, send, res, heartbeat, cancelFn: null };
++  const job = { repo, port, repoName, slug, existing, send, res, heartbeat, cancelFn: null, userId: req.userId };
+   deployQueue.push(job);
+   processQueue();
+ 
+@@ -402,28 +484,35 @@ app.post('/deploy', (req, res) => {
+   });
+ });
+ 
+-app.delete('/projects/:name', (req, res) => {
++app.delete('/projects/:name', requireAuth, async (req, res) => {
+   const name = req.params.name;
+-  const projects = loadProjects();
+-  const project = projects.find(p => p.name === name);
+-  if (!project) return res.status(404).json({ error: 'Project not found' });
+-  stopContainer(project.container);
+-  cleanDeployDir(project.container);
+-  saveProjects(projects.filter(p => p.name !== name));
+-  regenerateNginxConfig();
+-  res.json({ success: true });
++  try {
++    const { rows } = await pool.query('SELECT container FROM projects WHERE name = $1 AND user_id = $2', [name, req.userId]);
++    if (rows.length === 0) return res.status(403).json({ error: 'Unauthorized or not found' });
++    
++    const projects = loadProjects();
++    const project = projects.find(p => p.name === name) || rows[0];
++    
++    stopContainer(project.container);
++    cleanDeployDir(project.container);
++    saveProjects(projects.filter(p => p.name !== name));
++    await pool.query('DELETE FROM projects WHERE name = $1 AND user_id = $2', [name, req.userId]);
++    regenerateNginxConfig();
++    res.json({ success: true });
++  } catch (e) {
++    res.status(500).json({ error: 'Internal Server Error' });
++  }
+ });
+ 
+ // ── Static Logs Snapshot ────────────────────────────────────────────────────
+-app.get('/projects/:name/logs', (req, res) => {
++app.get('/projects/:name/logs', requireAuth, async (req, res) => {
+   const { name } = req.params;
+   const lines = parseInt(req.query.lines) || 100;
+-  const projects = loadProjects();
+-  const project = projects.find(p => p.name === name);
+-  if (!project) return res.status(404).json({ error: 'Project not found' });
+-
+-  const containerName = project.container || name;
+   try {
++    const { rows } = await pool.query('SELECT container FROM projects WHERE name = $1 AND user_id = $2', [name, req.userId]);
++    if (rows.length === 0) return res.status(403).json({ error: 'Unauthorized or not found' });
++    
++    const containerName = rows[0].container || name;
+     const logs = execSync(`docker logs --tail=${lines} ${containerName} 2>&1`, { timeout: 5000 }).toString();
+     res.json({ logs: logs.split('\n').filter(l => l.trim()) });
+   } catch (e) {
+@@ -432,57 +521,72 @@ app.get('/projects/:name/logs', (req, res) => {
+ });
+ 
+ // ── Container Lifecycle Controls ───────────────────────────────────────────
+-app.post('/projects/:name/start', (req, res) => {
++app.post('/projects/:name/start', requireAuth, async (req, res) => {
+   const { name } = req.params;
+-  const projects = loadProjects();
+-  const index = projects.findIndex(p => p.name === name);
+-  if (index === -1) return res.status(404).json({ error: 'Project not found' });
+-
+-  const project = projects[index];
+-  const containerName = project.container || name;
+   try {
++    const { rows } = await pool.query('SELECT container FROM projects WHERE name = $1 AND user_id = $2', [name, req.userId]);
++    if (rows.length === 0) return res.status(403).json({ error: 'Unauthorized or not found' });
++    
++    const containerName = rows[0].container || name;
+     execSync(`docker start ${containerName}`);
+-    project.status = 'running';
+-    saveProjects(projects);
+-    regenerateNginxConfig();
++    
++    const projects = loadProjects();
++    const index = projects.findIndex(p => p.name === name);
++    if (index !== -1) {
++      projects[index].status = 'running';
++      saveProjects(projects);
++      regenerateNginxConfig();
++    }
++    await pool.query('UPDATE projects SET status = $1 WHERE name = $2 AND user_id = $3', ['running', name, req.userId]);
++    
+     res.json({ success: true, status: 'running' });
+   } catch (e) {
+     res.status(500).json({ error: 'Failed to start container: ' + e.message });
+   }
+ });
+ 
+-app.post('/projects/:name/stop', (req, res) => {
++app.post('/projects/:name/stop', requireAuth, async (req, res) => {
+   const { name } = req.params;
+-  const projects = loadProjects();
+-  const index = projects.findIndex(p => p.name === name);
+-  if (index === -1) return res.status(404).json({ error: 'Project not found' });
+-
+-  const project = projects[index];
+-  const containerName = project.container || name;
+   try {
++    const { rows } = await pool.query('SELECT container FROM projects WHERE name = $1 AND user_id = $2', [name, req.userId]);
++    if (rows.length === 0) return res.status(403).json({ error: 'Unauthorized or not found' });
++    
++    const containerName = rows[0].container || name;
+     execSync(`docker stop ${containerName}`);
+-    project.status = 'stopped';
+-    saveProjects(projects);
+-    regenerateNginxConfig();
++    
++    const projects = loadProjects();
++    const index = projects.findIndex(p => p.name === name);
++    if (index !== -1) {
++      projects[index].status = 'stopped';
++      saveProjects(projects);
++      regenerateNginxConfig();
++    }
++    await pool.query('UPDATE projects SET status = $1 WHERE name = $2 AND user_id = $3', ['stopped', name, req.userId]);
++    
+     res.json({ success: true, status: 'stopped' });
+   } catch (e) {
+     res.status(500).json({ error: 'Failed to stop container: ' + e.message });
+   }
+ });
+ 
+-app.post('/projects/:name/restart', (req, res) => {
++app.post('/projects/:name/restart', requireAuth, async (req, res) => {
+   const { name } = req.params;
+-  const projects = loadProjects();
+-  const index = projects.findIndex(p => p.name === name);
+-  if (index === -1) return res.status(404).json({ error: 'Project not found' });
+-
+-  const project = projects[index];
+-  const containerName = project.container || name;
+   try {
++    const { rows } = await pool.query('SELECT container FROM projects WHERE name = $1 AND user_id = $2', [name, req.userId]);
++    if (rows.length === 0) return res.status(403).json({ error: 'Unauthorized or not found' });
++    
++    const containerName = rows[0].container || name;
+     execSync(`docker restart ${containerName}`);
+-    project.status = 'running';
+-    saveProjects(projects);
+-    regenerateNginxConfig();
++    
++    const projects = loadProjects();
++    const index = projects.findIndex(p => p.name === name);
++    if (index !== -1) {
++      projects[index].status = 'running';
++      saveProjects(projects);
++      regenerateNginxConfig();
++    }
++    await pool.query('UPDATE projects SET status = $1 WHERE name = $2 AND user_id = $3', ['running', name, req.userId]);
++    
+     res.json({ success: true, status: 'running' });
+   } catch (e) {
+     res.status(500).json({ error: 'Failed to restart container: ' + e.message });
+@@ -495,7 +599,11 @@ app.post('/projects/:name/restart', (req, res) => {
+   for (const p of projects) {
+     if (!p.slug) {
+       p.slug = p.name.replace(/[^a-zA-Z0-9_-]/g, '-').toLowerCase();
+-      p.url = 'http://' + PUBLIC_IP + ':' + p.port + '/';
++      changed = true;
++    }
++    const expectedUrl = 'http://' + PUBLIC_IP + '/' + p.slug + '/';
++    if (p.url !== expectedUrl) {
++      p.url = expectedUrl;
+       changed = true;
+     }
+   }
+@@ -506,12 +614,15 @@ regenerateNginxConfig();
+ 
+ 
+ // ── Real-time log streaming (SSE) ───────────────────────────────────────────
+-app.get('/projects/:name/logs/stream', (req, res) => {
++app.get('/projects/:name/logs/stream', requireAuth, async (req, res) => {
+   const { name } = req.params;
+   const tail = parseInt(req.query.tail) || 50;
+-  const projects = loadProjects();
+-  const project = projects.find(function (p) { return p.name === name; });
+-  const containerName = (project && project.container) ? project.container : name;
++  
++  try {
++    const { rows } = await pool.query('SELECT container FROM projects WHERE name = $1 AND user_id = $2', [name, req.userId]);
++    if (rows.length === 0) return res.status(403).json({ error: 'Unauthorized or not found' });
++    
++    const containerName = rows[0].container || name;
+ 
+   res.setHeader('Content-Type', 'text/event-stream');
+   res.setHeader('Cache-Control', 'no-cache');
+@@ -562,6 +673,9 @@ app.get('/projects/:name/logs/stream', (req, res) => {
+     if (child) { try { child.kill('SIGTERM'); } catch (e) { } }
+     res.end();
+   });
++  } catch (e) {
++    res.status(500).json({ error: 'Internal Server Error' });
++  }
+ });
+ 
+ // ── Container resource stats (cached, refreshes every 4s) ───────────────────
+@@ -577,7 +691,7 @@ function refreshStatsCache() {
+     const parsed = stdout.trim().split('\n').filter(function (l) { return l.trim(); }).map(function (l) {
+       try { return JSON.parse(l); } catch (e) { return null; }
+     }).filter(Boolean);
+-    if (parsed.length > 0) _statsCache = parsed;
++    _statsCache = parsed;
+   });
+ }
+ 
+@@ -586,10 +700,20 @@ refreshStatsCache();
+ // Keep refreshing every 4 seconds
+ setInterval(refreshStatsCache, 4000);
+ 
+-app.get('/stats', function (_req, res) {
+-  res.json(_statsCache);
+-  // Trigger a fresh update in background
+-  refreshStatsCache();
++app.get('/stats', requireAuth, async function (req, res) {
++  try {
++    const { rows } = await pool.query('SELECT container FROM projects WHERE user_id = $1', [req.userId]);
++    const userContainers = new Set(rows.map(r => r.container));
++    
++    // Filter _statsCache to only include containers belonging to this user
++    const filteredStats = _statsCache.filter(stat => userContainers.has(stat.Name));
++    
++    res.json(filteredStats);
++    refreshStatsCache();
++  } catch (error) {
++    console.error("Error fetching stats:", error);
++    res.status(500).json({ error: "Internal Server Error" });
++  }
+ });
+ app.listen(5000, '0.0.0.0', () => console.log('ZenithOS API running on port 5000 | IP: ' + PUBLIC_IP));
+ 
+@@ -617,45 +741,93 @@ function getOrCreateSecret(projectName) {
+ 
+ // GET /webhook/info/:projectName — return webhook URL + secret
+ // ── Environment Variables ─────────────────────────────────────────────────────
+-app.get('/projects/:name/env', (req, res) => {
+-  const vars = getProjectEnvVars(req.params.name);
+-  res.json(vars);
++app.get('/projects/:name/env', requireAuth, async (req, res) => {
++  try {
++    const { rows } = await pool.query('SELECT name FROM projects WHERE name = $1 AND user_id = $2', [req.params.name, req.userId]);
++    if (rows.length === 0) return res.status(403).json({ error: 'Unauthorized or not found' });
++    
++    const vars = getProjectEnvVars(req.params.name);
++    res.json(vars);
++  } catch (e) {
++    res.status(500).json({ error: 'Internal Server Error' });
++  }
+ });
+ 
+-app.post('/projects/:name/env', (req, res) => {
+-  const { vars } = req.body;
+-  if (!vars || typeof vars !== 'object') return res.status(400).json({ error: 'vars required' });
+-  // Sanitize: only string values
+-  const clean = {};
+-  for (const [k, v] of Object.entries(vars)) {
+-    if (k && typeof k === 'string') clean[k.trim()] = String(v ?? '');
++app.post('/projects/:name/env', requireAuth, async (req, res) => {
++  try {
++    const { rows } = await pool.query('SELECT name FROM projects WHERE name = $1 AND user_id = $2', [req.params.name, req.userId]);
++    if (rows.length === 0) return res.status(403).json({ error: 'Unauthorized or not found' });
++    
++    const { vars } = req.body;
++    if (!vars || typeof vars !== 'object') return res.status(400).json({ error: 'vars required' });
++    // Sanitize: only string values
++    const clean = {};
++    for (const [k, v] of Object.entries(vars)) {
++      if (k && typeof k === 'string') clean[k.trim()] = String(v ?? '');
++    }
++    setProjectEnvVars(req.params.name, clean);
++    res.json({ ok: true, saved: Object.keys(clean).length });
++  } catch (e) {
++    res.status(500).json({ error: 'Internal Server Error' });
+   }
+-  setProjectEnvVars(req.params.name, clean);
+-  res.json({ ok: true, saved: Object.keys(clean).length });
+ });
+ 
+-app.delete('/projects/:name/env/:key', (req, res) => {
+-  const all = loadAllEnvVars();
+-  const project = all[req.params.name] || {};
+-  delete project[decodeURIComponent(req.params.key)];
+-  all[req.params.name] = project;
+-  saveAllEnvVars(all);
+-  res.json({ ok: true });
++app.delete('/projects/:name/env/:key', requireAuth, async (req, res) => {
++  try {
++    const { rows } = await pool.query('SELECT name FROM projects WHERE name = $1 AND user_id = $2', [req.params.name, req.userId]);
++    if (rows.length === 0) return res.status(403).json({ error: 'Unauthorized or not found' });
++    
++    const all = loadAllEnvVars();
++    const project = all[req.params.name] || {};
++    delete project[decodeURIComponent(req.params.key)];
++    all[req.params.name] = project;
++    saveAllEnvVars(all);
++    res.json({ ok: true });
++  } catch (e) {
++    res.status(500).json({ error: 'Internal Server Error' });
++  }
+ });
+ 
+-app.get('/webhook/info/:projectName', (req, res) => {
++app.get('/webhook/info/:projectName', requireAuth, async (req, res) => {
+   const name = req.params.projectName;
+-  const projects = loadProjects();
+-  const project = projects.find(p => p.name === name);
+-  if (!project) return res.status(404).json({ error: 'Project not found' });
+-  const secret = getOrCreateSecret(name);
+-  const slug = (project.slug || name).replace(/[^a-zA-Z0-9_-]/g, '-').toLowerCase();
+-  res.json({
+-    webhookUrl: 'http://' + PUBLIC_IP + ':5000/webhook/' + slug,
+-    secret,
+-    projectName: name,
+-    slug,
+-  });
++  try {
++    const { rows } = await pool.query('SELECT slug FROM projects WHERE name = $1 AND user_id = $2', [name, req.userId]);
++    if (rows.length === 0) return res.status(403).json({ error: 'Unauthorized or not found' });
++    
++    const secrets = loadWebhookSecrets();
++    const secret = secrets[name];
++    if (!secret) {
++      return res.status(404).json({ error: 'Webhook not configured' });
++    }
++    const slug = rows[0].slug || name;
++    res.json({
++      webhookUrl: 'http://' + PUBLIC_IP + ':5000/webhook/' + slug,
++      secret,
++      projectName: name,
++      slug,
++    });
++  } catch (e) {
++    res.status(500).json({ error: 'Internal Server Error' });
++  }
++});
++
++app.post('/webhook/info/:projectName', requireAuth, async (req, res) => {
++  const name = req.params.projectName;
++  try {
++    const { rows } = await pool.query('SELECT slug FROM projects WHERE name = $1 AND user_id = $2', [name, req.userId]);
++    if (rows.length === 0) return res.status(403).json({ error: 'Unauthorized or not found' });
++    
++    const secret = getOrCreateSecret(name);
++    const slug = rows[0].slug || name;
++    res.json({
++      webhookUrl: 'http://' + PUBLIC_IP + ':5000/webhook/' + slug,
++      secret,
++      projectName: name,
++      slug,
++    });
++  } catch (e) {
++    res.status(500).json({ error: 'Internal Server Error' });
++  }
+ });
+ 
+ // POST /webhook/:slug — GitHub push webhook
+@@ -751,19 +923,24 @@ app.get('/projects/:name/logs', (req, res) => {
+ });
+ 
+ // ── All deployments ──────────────────────────────────────────────────────────
+-app.get('/deployments', (_req, res) => {
+-  const projects = loadProjects();
+-  res.json(projects.map((p, i) => ({
+-    id: i + 1,
+-    project: p.name,
+-    slug: p.slug || p.name,
+-    status: p.status || 'running',
+-    framework: p.framework || 'unknown',
+-    repo: p.repo || '',
+-    url: p.url || ('http://' + PUBLIC_IP + ':' + p.port),
+-    port: p.port,
+-    createdAt: p.createdAt || new Date().toISOString(),
+-  })));
++app.get('/deployments', requireAuth, async (req, res) => {
++  try {
++    const { rows } = await pool.query('SELECT * FROM projects WHERE user_id = $1 ORDER BY created_at DESC', [req.userId]);
++    res.json(rows.map((p, i) => ({
++      id: i + 1,
++      project: p.name,
++      slug: p.slug || p.name,
++      status: p.status || 'running',
++      framework: p.framework || 'unknown',
++      repo: p.repo || '',
++      url: p.url || ('http://' + PUBLIC_IP + ':' + p.port),
++      port: p.port,
++      createdAt: p.created_at || new Date().toISOString(),
++    })));
++  } catch (error) {
++    console.error("Deployments fetch error:", error);
++    res.status(500).json({ error: "Internal Server Error" });
++  }
+ });
+ 
+ // ── All env vars ─────────────────────────────────────────────────────────────
+@@ -778,6 +955,13 @@ const GITHUB_OAUTH_FILE = path.resolve(__dirname, 'github_oauth.json');
+ const GITHUB_TOKEN_FILE = path.resolve(__dirname, 'github_token.json');
+ 
+ function loadGitHubOauth() {
++  if (process.env.GITHUB_IMPORT_CLIENT_ID) {
++    return {
++      client_id: process.env.GITHUB_IMPORT_CLIENT_ID,
++      client_secret: process.env.GITHUB_IMPORT_CLIENT_SECRET,
++      homepage_url: process.env.GITHUB_IMPORT_HOMEPAGE_URL || "http://13.233.87.37"
++    };
++  }
+   try {
+     if (fs.existsSync(GITHUB_OAUTH_FILE)) {
+       return JSON.parse(fs.readFileSync(GITHUB_OAUTH_FILE, 'utf-8'));
+@@ -786,11 +970,11 @@ function loadGitHubOauth() {
+   return {};
+ }
+ 
+-app.get('/api/auth/github', (req, res) => {
++app.get('/api/auth/github', requireAuth, (req, res) => {
+   const config = loadGitHubOauth();
+   if (!config.client_id) return res.status(400).send('OAuth client not configured');
+   const redirectUri = `http://13.233.87.37:5000/api/auth/github/callback`;
+-  const githubUrl = `https://github.com/login/oauth/authorize?client_id=${config.client_id}&redirect_uri=${encodeURIComponent(redirectUri)}&scope=repo,user`;
++  const githubUrl = `https://github.com/login/oauth/authorize?client_id=${config.client_id}&redirect_uri=${encodeURIComponent(redirectUri)}&scope=repo,user&state=${req.userId}`;
+   res.redirect(githubUrl);
+ });
+ 
+@@ -819,7 +1003,11 @@ app.get('/api/auth/github/callback', async (req, res) => {
+     }
+ 
+     const accessToken = tokenData.access_token;
+-    fs.writeFileSync(GITHUB_TOKEN_FILE, JSON.stringify({ access_token: accessToken }));
++    const userId = req.query.state;
++
++    if (accessToken && userId) {
++      await pool.query('UPDATE users SET github_token = $1 WHERE id = $2', [accessToken, userId]);
++    }
+ 
+     res.send(`
+       <script>
+@@ -837,27 +1025,31 @@ app.get('/api/auth/github/callback', async (req, res) => {
+   }
+ });
+ 
+-app.get('/api/auth/github/status', (req, res) => {
+-  const connected = fs.existsSync(GITHUB_TOKEN_FILE);
+-  res.json({ connected });
++app.get('/api/auth/github/status', requireAuth, async (req, res) => {
++  try {
++    const { rows } = await pool.query('SELECT github_token FROM users WHERE id = $1', [req.userId]);
++    const connected = rows.length > 0 && !!rows[0].github_token;
++    res.json({ connected });
++  } catch (err) {
++    res.json({ connected: false });
++  }
+ });
+ 
+-app.post('/api/auth/github/disconnect', (req, res) => {
++app.post('/api/auth/github/disconnect', requireAuth, async (req, res) => {
+   try {
+-    if (fs.existsSync(GITHUB_TOKEN_FILE)) {
+-      fs.unlinkSync(GITHUB_TOKEN_FILE);
+-    }
++    await pool.query('UPDATE users SET github_token = NULL WHERE id = $1', [req.userId]);
+     res.json({ ok: true });
+   } catch (e) {
+     res.status(500).json({ error: 'Disconnect failed' });
+   }
+ });
+ 
+-app.get('/api/github/repos', async (req, res) => {
++app.get('/api/github/repos', requireAuth, async (req, res) => {
+   let token = '';
+   try {
+-    if (fs.existsSync(GITHUB_TOKEN_FILE)) {
+-      token = JSON.parse(fs.readFileSync(GITHUB_TOKEN_FILE, 'utf-8')).access_token;
++    const { rows } = await pool.query('SELECT github_token FROM users WHERE id = $1', [req.userId]);
++    if (rows.length > 0 && rows[0].github_token) {
++      token = rows[0].github_token;
+     }
+   } catch (e) { }
+ 
+@@ -897,19 +1089,28 @@ app.get('/api/github/repos', async (req, res) => {
+ // ─────────────────────────────────────────────────────────────────────────────
+ // REAL-TIME METRICS ENDPOINT (DOCKER CONTAINER STATS)
+ // ─────────────────────────────────────────────────────────────────────────────
+-app.get('/api/projects/:name/stats', (req, res) => {
++app.get('/api/projects/:name/stats', requireAuth, async (req, res) => {
+   const { name } = req.params;
+-  const projects = loadProjects();
+-  const project = projects.find(p => p.name === name);
+-  if (!project) return res.status(404).json({ error: 'Project not found' });
+-
+-  const containerName = project.container || name;
+   try {
+-    const out = execSync(`docker stats --no-stream --format '{"cpu":"{{.CPUPerc}}","memory":"{{.MemUsage}}","net":"{{.NetIO}}","memPerc":"{{.MemPerc}}"}' ${containerName} 2>/dev/null`, { timeout: 3000 }).toString();
+-    if (!out.trim()) {
++    const { rows } = await pool.query('SELECT container FROM projects WHERE name = $1 AND user_id = $2', [name, req.userId]);
++    if (rows.length === 0) return res.status(403).json({ error: 'Unauthorized or not found' });
++    
++    const containerName = rows[0].container || name;
++    
++    let stats;
++    try {
++      const out = execSync(`docker stats --no-stream --format '{"cpu":"{{.CPUPerc}}","memory":"{{.MemUsage}}","net":"{{.NetIO}}","memPerc":"{{.MemPerc}}"}' ${containerName} 2>/dev/null`, { timeout: 3000 }).toString();
++      if (out.trim()) {
++        stats = JSON.parse(out.trim());
++      }
++    } catch (e) {
++      // Container is stopped or sleeping, return offline stats
++    }
++
++    if (!stats) {
+       return res.json({ cpu: '0%', memory: '0B / 0B', net: '0B / 0B', memPerc: '0%', online: false });
+     }
+-    const stats = JSON.parse(out.trim());
++
+     res.json({
+       cpu: stats.cpu,
+       memory: stats.memory,
+@@ -918,7 +1119,7 @@ app.get('/api/projects/:name/stats', (req, res) => {
+       online: true
+     });
+   } catch (e) {
+-    res.json({ cpu: '0%', memory: '0B / 0B', net: '0B / 0B', memPerc: '0%', online: false });
++    res.status(500).json({ error: 'Internal Server Error' });
+   }
+ });
+ 
+@@ -1034,7 +1235,6 @@ app.delete('/api/databases/:name', (req, res) => {
+ // ─────────────────────────────────────────────────────────────────────────────
+ // USER AUTHENTICATION (Google, GitHub)
+ // ─────────────────────────────────────────────────────────────────────────────
+-const JWT_SECRET = process.env.JWT_SECRET || "super_secret_jwt_key_12345";
+ const API_URL = process.env.API_URL || "http://13.233.87.37:5000";
+ const FRONTEND_URL = process.env.FRONTEND_URL || "http://localhost:5174";
+ 
+@@ -1053,36 +1253,18 @@ const generateToken = (userId) => {
+ };
+ 
+ const sendPopupResponse = (res, token) => {
+-  res.send(`
+-    <html>
+-      <body>
+-        <script>
+-          window.opener.postMessage({ type: 'AUTH_SUCCESS', token: '${token}' }, '*');
+-          window.close();
+-        </script>
+-      </body>
+-    </html>
+-  `);
++  res.redirect(`${FRONTEND_URL}/auth/callback?token=${token}`);
+ };
+ 
+ const sendPopupError = (res, errorMsg) => {
+-  res.send(`
+-    <html>
+-      <body>
+-        <script>
+-          window.opener.postMessage({ type: 'AUTH_ERROR', error: '${errorMsg}' }, '*');
+-          window.close();
+-        </script>
+-      </body>
+-    </html>
+-  `);
++  res.redirect(`${FRONTEND_URL}/sign-in?error=${encodeURIComponent(errorMsg)}`);
+ };
+ 
+ // =======================
+ // GOOGLE OAUTH
+ // =======================
+ app.get("/api/auth/google", (req, res) => {
+-  const url = `https://accounts.google.com/o/oauth2/v2/auth?client_id=${GOOGLE_CLIENT_ID}&redirect_uri=${GOOGLE_REDIRECT_URI}&response_type=code&scope=email profile`;
++  const url = `https://accounts.google.com/o/oauth2/v2/auth?client_id=${GOOGLE_CLIENT_ID}&redirect_uri=${GOOGLE_REDIRECT_URI}&response_type=code&scope=email profile&prompt=select_account`;
+   res.redirect(url);
+ });
+ 
+@@ -1137,7 +1319,7 @@ app.get("/api/auth/google/callback", async (req, res) => {
+ // GITHUB OAUTH (USER LOGIN)
+ // =======================
+ app.get("/api/auth/github/user", (req, res) => {
+-  const url = `https://github.com/login/oauth/authorize?client_id=${GITHUB_AUTH_CLIENT_ID}&redirect_uri=${GITHUB_AUTH_REDIRECT_URI}&scope=user:email`;
++  const url = `https://github.com/login/oauth/authorize?client_id=${GITHUB_AUTH_CLIENT_ID}&redirect_uri=${GITHUB_AUTH_REDIRECT_URI}&scope=user:email&prompt=select_account`;
+   res.redirect(url);
+ });
+ 
+@@ -1227,4 +1409,63 @@ app.get("/api/auth/me", async (req, res) => {
+   }
+ });
+ 
++// =======================
++// TEAM MEMBERS ROUTES
++// =======================
++app.get("/api/team", requireAuth, async (req, res) => {
++  try {
++    const { rows } = await pool.query('SELECT * FROM team_members WHERE owner_id = $1 ORDER BY joined_at DESC', [req.userId]);
++    // Format response
++    const formatted = rows.map(r => ({
++      id: r.id,
++      name: r.email.split('@')[0], // Mock name from email
++      email: r.email,
++      role: r.role,
++      has2fa: r.has_2fa,
++      joinedAt: new Date(r.joined_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
++    }));
++    res.json(formatted);
++  } catch (error) {
++    console.error("Fetch team error", error);
++    res.status(500).json({ error: "Failed to fetch team" });
++  }
++});
++
++app.post("/api/team/invite", requireAuth, async (req, res) => {
++  const { email, role } = req.body;
++  if (!email) return res.status(400).json({ error: "Email required" });
++  
++  try {
++    const { rows } = await pool.query('SELECT COUNT(*) FROM team_members WHERE owner_id = $1', [req.userId]);
++    const currentCount = parseInt(rows[0].count, 10);
++    
++    // We already count the owner as 1 in the UI, so max 1 invite allowed for 2 total seats
++    if (currentCount >= 1) {
++      return res.status(402).json({ error: "Free limit reached. Upgrade to Pro for unlimited seats." });
++    }
++
++    const id = crypto.randomUUID();
++    await pool.query(
++      'INSERT INTO team_members (id, owner_id, email, role, has_2fa) VALUES ($1, $2, $3, $4, $5)',
++      [id, req.userId, email, role || 'Member', false]
++    );
++
++    res.json({ success: true, id });
++  } catch (error) {
++    console.error("Invite team error", error);
++    res.status(500).json({ error: "Failed to invite member" });
++  }
++});
++
++app.delete("/api/team/:id", requireAuth, async (req, res) => {
++  try {
++    await pool.query('DELETE FROM team_members WHERE id = $1 AND owner_id = $2', [req.params.id, req.userId]);
++    res.json({ success: true });
++  } catch (error) {
++    console.error("Delete team error", error);
++    res.status(500).json({ error: "Failed to delete member" });
++  }
++});
++
++
+ 
+diff --git a/artifacts/zenith-os/.env b/artifacts/zenith-os/.env
+index 8ed0e6b..c28dc08 100644
+--- a/artifacts/zenith-os/.env
++++ b/artifacts/zenith-os/.env
+@@ -1 +1 @@
+-VITE_API_URL=http://localhost:5000
++VITE_API_URL=http://13.233.87.37:5000
+diff --git a/artifacts/zenith-os/src/App.tsx b/artifacts/zenith-os/src/App.tsx
+index a0d0d19..87fcca6 100644
+--- a/artifacts/zenith-os/src/App.tsx
++++ b/artifacts/zenith-os/src/App.tsx
+@@ -12,12 +12,19 @@ import Import from "@/pages/import";
+ import Deploying from "@/pages/deploying";
+ import ProjectDetail from "@/pages/project";
+ import WebhookPage from "@/pages/webhook";
++import WebhooksPage from "@/pages/webhooks";
+ import DeploymentsPage from "@/pages/deployments";
+ import LogsPage from "@/pages/logs";
+ import DomainsPage from "@/pages/domains";
+ import EnvVarsPage from "@/pages/env-vars";
+ import InfrastructurePage from "@/pages/infrastructure";
++import AuthCallback from "@/pages/auth-callback";
++import TeamPage from "@/pages/team";
++import AcceptInvitePage from "@/pages/accept-invite";
++import BillingPage from "@/pages/billing";
++import TokensPage from "@/pages/tokens";
+ import { ProjectDeleteRoute } from "@/pages/project";
++import SupaspirePage from "@/pages/supaspire";
+ 
+ const queryClient = new QueryClient();
+ 
+@@ -840,6 +847,7 @@ function Router() {
+     <Switch>
+       <Route path="/" component={Home} />
+       <Route path="/sign-in" component={SignIn} />
++      <Route path="/auth/callback" component={AuthCallback} />
+       <Route path="/dashboard" component={Dashboard} />
+       <Route path="/import" component={Import} />
+       <Route path="/deploying" component={Deploying} />
+@@ -850,7 +858,13 @@ function Router() {
+       <Route path="/logs" component={LogsPage} />
+       <Route path="/domains" component={DomainsPage} />
+       <Route path="/env" component={EnvVarsPage} />
++      <Route path="/webhooks" component={WebhooksPage} />
++      <Route path="/supaspire" component={SupaspirePage} />
+       <Route path="/infrastructure" component={InfrastructurePage} />
++      <Route path="/team" component={TeamPage} />
++      <Route path="/billing" component={BillingPage} />
++      <Route path="/tokens" component={TokensPage} />
++      <Route path="/accept-invite" component={AcceptInvitePage} />
+       <Route component={NotFound} />
+     </Switch>
+   );
+diff --git a/artifacts/zenith-os/src/components/AppShell.tsx b/artifacts/zenith-os/src/components/AppShell.tsx
+index e2790dc..3d1792d 100644
+--- a/artifacts/zenith-os/src/components/AppShell.tsx
++++ b/artifacts/zenith-os/src/components/AppShell.tsx
+@@ -1,5 +1,6 @@
+ import { useState, useEffect, type ReactNode } from "react";
+-import { Link } from "wouter";
++import { Link, useLocation } from "wouter";
++import { useAuth } from "@/hooks/useAuth";
+ import { motion, AnimatePresence } from "framer-motion";
+ import {
+   Zap,
+@@ -7,6 +8,8 @@ import {
+   Bell,
+   Settings,
+   ChevronDown,
++  ChevronsUpDown,
++  Check,
+   Home,
+   Rocket,
+   FileText,
+@@ -25,6 +28,14 @@ import {
+   Layers,
+   Loader2,
+   Plus,
++  Webhook,
++  Users,
++  History,
++  Key,
++  ChevronLeft,
++  ChevronRight,
++  Shield,
++  Activity
+ } from "lucide-react";
+ 
+ type QueueStatus = {
+@@ -58,57 +69,180 @@ function useQueueStatus() {
+ }
+ 
+ export const NAV_ITEMS = [
+-  { icon: Home, label: "Projects", href: "/dashboard" },
+-  { icon: Rocket, label: "Deployments", href: "/deployments" },
+-  { icon: FileText, label: "Logs", href: "/logs" },
+-  { icon: Globe, label: "Domains", href: "/domains" },
+-  { icon: SlidersHorizontal, label: "Environment Variables", href: "/env" },
+-  { icon: Database, label: "Database", badge: "Soon" },
+-  { icon: Lock, label: "Auth", badge: "Soon" },
+-  { icon: Terminal, label: "Functions", badge: "Future" },
+-  { icon: Cpu, label: "Infrastructure", href: "/infrastructure" },
+-  { icon: Package, label: "Storage", badge: "Soon" },
+-  { icon: Layers, label: "CDN", badge: "Soon" },
+-  { icon: BarChart3, label: "Analytics", badge: "Future" },
+-  { icon: Plug2, label: "Integrations", badge: "Soon" },
+-  { icon: CreditCard, label: "Billing", href: "/dashboard" },
+-  { icon: Settings, label: "Settings", href: "/dashboard" },
++  { icon: Home, label: "Projects", href: "/dashboard", section: "Deployment" },
++  { icon: Rocket, label: "Deployments", href: "/deployments", section: "Deployment" },
++  { icon: FileText, label: "Logs", href: "/logs", section: "Deployment" },
++  { icon: Globe, label: "Domains", href: "/domains", section: "Deployment" },
++  { icon: SlidersHorizontal, label: "Environment Variables", href: "/env", section: "Deployment" },
++  
++  { icon: Database, label: "Supaspire", hasSubMenu: true, section: "Services" },
++  { icon: Shield, label: "Hacker-shield", hasSubMenu: true, section: "Services" },
++  
++  { icon: Cpu, label: "Infrastructure", href: "/infrastructure", section: "Management" },
++  { icon: CreditCard, label: "Billing", href: "/billing", section: "Management" },
++  { icon: Settings, label: "Settings", href: "/settings", section: "Management" },
++] as const;
++
++export const SUPASPIRE_SUB_ITEMS = [
++  { icon: Layers, label: "Overview" },
++  { icon: Database, label: "Database" },
++  { icon: Lock, label: "Authentication" },
++  { icon: Package, label: "Storage" },
++  { icon: Activity, label: "Real-time" },
++  { icon: Terminal, label: "Functions" },
++] as const;
++
++export const HACKER_SHIELD_SUB_ITEMS = [
++  { icon: Layers, label: "Overview" },
++  { icon: Shield, label: "Rules" },
++  { icon: FileText, label: "Logs" },
++  { icon: Settings, label: "Settings" },
+ ] as const;
+ 
+ export type NavLabel = (typeof NAV_ITEMS)[number]["label"];
+ 
+ export function AppShell({
+   activeNav = "Projects",
++  activeSubItem: propActiveSubItem,
++  onSubItemChange,
++  hasProject = true,
+   children,
++  activeSubTab,
++  onSubTabChange,
+ }: {
+-  activeNav?: NavLabel;
++  activeNav?: string;
++  activeSubItem?: string;
++  onSubItemChange?: (item: string) => void;
++  hasProject?: boolean;
+   children: ReactNode;
++  activeSubTab?: string;
++  onSubTabChange?: (tab: string) => void;
+ }) {
+   const [profileOpen, setProfileOpen] = useState(false);
++  const [workspaceOpen, setWorkspaceOpen] = useState(false);
++  const [workspaceSearch, setWorkspaceSearch] = useState("");
++  
++  const [activeSubMenu, setActiveSubMenu] = useState<string | null>(
++    activeNav === "Supaspire" || activeNav === "Hacker-shield" ? activeNav : null
++  );
++  
++  const [activeSubItemState, setActiveSubItemState] = useState<string>("Overview");
++  
++  const activeSubItem = propActiveSubItem !== undefined ? propActiveSubItem : activeSubItemState;
++  const setActiveSubItem = (item: string) => {
++    setActiveSubItemState(item);
++    if (onSubItemChange) onSubItemChange(item);
++  };
++
++  useEffect(() => {
++    if (activeNav === "Supaspire" || activeNav === "Hacker-shield") {
++      setActiveSubMenu(activeNav);
++    } else {
++      setActiveSubMenu(null);
++    }
++  }, [activeNav]);
++
+   const queue = useQueueStatus();
++  const { user, logout } = useAuth();
++  const [, navigate] = useLocation();
++
++  const handleSignOut = () => {
++    localStorage.removeItem("zenith.projects");
++    localStorage.removeItem("cloudrik-workspace");
++    logout();
++    navigate("/sign-in");
++  };
++
++  const workspaces = [
++    { id: "personal", name: "Personal Workspace", type: "personal" },
++    { id: "team-supaspire", name: "Supaspire Team", type: "team" },
++    { id: "team-dev", name: "Hacker-shield Dev", type: "team" },
++  ];
++  const [activeWorkspace, setActiveWorkspace] = useState("personal");
+ 
+   return (
+-    <div className="h-screen flex flex-col bg-white font-sans overflow-hidden">
++    <div className="h-screen flex flex-col bg-[#fafafa] font-sans overflow-hidden">
+       {/* HEADER */}
+       <header className="h-14 shrink-0 bg-white border-b border-slate-200 flex items-center px-4 gap-4 z-30">
+-        <Link href="/" className="flex items-center gap-2 mr-2">
++        <Link href="/" className="flex items-center gap-2 mr-1">
+           <div className="w-7 h-7 rounded-lg bg-slate-900 flex items-center justify-center shadow-sm">
+             <Zap className="w-4 h-4 text-sky-400" />
+           </div>
+-          <span className="font-bold text-slate-900 text-sm tracking-tight">Zenith OS</span>
++          <span className="font-bold text-slate-900 text-sm tracking-tight">CloudRik</span>
+         </Link>
++        
++        <div className="text-slate-300 mx-1">/</div>
++        
++        {/* Workspace Switcher */}
++        <div className="relative z-50">
++          <button
++            onClick={() => { setWorkspaceOpen(!workspaceOpen); setWorkspaceSearch(""); }}
++            className="flex items-center gap-2 h-8 px-2 rounded-lg hover:bg-slate-100 transition-colors group"
++          >
++            <div className={`w-[22px] h-[22px] rounded-[5px] flex items-center justify-center text-white text-[10px] font-bold shrink-0 shadow-sm ${activeWorkspace === "personal" ? "bg-gradient-to-br from-slate-700 to-slate-900" : "bg-gradient-to-br from-violet-500 to-indigo-600"}`}>
++              {workspaces.find(w => w.id === activeWorkspace)?.name.slice(0, 2).toUpperCase()}
++            </div>
++            <span className="text-sm font-semibold text-slate-800 hidden sm:block whitespace-nowrap">
++              {workspaces.find(w => w.id === activeWorkspace)?.name}
++            </span>
++            <ChevronsUpDown className="w-3.5 h-3.5 text-slate-400 shrink-0" />
++          </button>
+ 
+-        <div className="flex-1 max-w-xl relative">
+-          <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+-          <input
+-            type="text"
+-            placeholder="Search projects, deployments..."
+-            className="w-full h-10 pl-10 pr-4 rounded-xl bg-slate-100 border border-slate-200 text-sm text-slate-700 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-sky-400/40 focus:border-sky-300 transition-all"
+-          />
++          {workspaceOpen && (
++            <div className="fixed inset-0 z-40" onClick={() => setWorkspaceOpen(false)} />
++          )}
++
++          <AnimatePresence>
++            {workspaceOpen && (
++              <motion.div
++                initial={{ opacity: 0, scale: 0.97, y: -4 }}
++                animate={{ opacity: 1, scale: 1, y: 0 }}
++                exit={{ opacity: 0, scale: 0.97, y: -4 }}
++                transition={{ duration: 0.12 }}
++                className="absolute left-0 top-10 w-64 bg-white border border-slate-200 rounded-xl shadow-2xl z-50 overflow-hidden"
++              >
++                <div className="flex items-center gap-2 px-3 py-2 border-b border-slate-100">
++                  <Search className="w-3.5 h-3.5 text-slate-400 shrink-0" />
++                  <input
++                    autoFocus
++                    type="text"
++                    value={workspaceSearch}
++                    onChange={e => setWorkspaceSearch(e.target.value)}
++                    placeholder="Find workspace..."
++                    className="w-full text-xs text-slate-700 placeholder:text-slate-400 bg-transparent focus:outline-none"
++                  />
++                </div>
++                <div className="p-1 max-h-56 overflow-y-auto">
++                  {workspaces
++                    .filter(w => w.name.toLowerCase().includes(workspaceSearch.toLowerCase()))
++                    .map((w) => {
++                      const isActive = w.id === activeWorkspace;
++                      return (
++                        <button
++                          key={w.id}
++                          onClick={() => {
++                            setActiveWorkspace(w.id);
++                            setWorkspaceOpen(false);
++                          }}
++                          className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs font-semibold text-left transition-all ${isActive ? "bg-slate-100 text-slate-900 font-bold" : "text-slate-600 hover:bg-slate-50"}`}
++                        >
++                          <div className={`w-[22px] h-[22px] rounded-[5px] flex items-center justify-center text-white text-[10px] font-bold shrink-0 ${w.type === "personal" ? "bg-gradient-to-br from-slate-700 to-slate-900" : "bg-gradient-to-br from-violet-500 to-indigo-600"}`}>
++                            {w.name.slice(0, 2).toUpperCase()}
++                          </div>
++                          <span className="flex-grow truncate">{w.name}</span>
++                          {isActive && <Check className="w-3.5 h-3.5 text-slate-500" />}
++                        </button>
++                      );
++                    })}
++                </div>
++              </motion.div>
++            )}
++          </AnimatePresence>
+         </div>
+ 
+-        <div className="ml-auto flex items-center gap-1">
+-          {/* Live deploy queue badge */}
++        <div className="flex-grow" />
++
++        <div className="flex items-center gap-1">
+           {queue && queue.total > 0 && (
+             <Link
+               href="/deployments"
+@@ -116,7 +250,7 @@ export function AppShell({
+             >
+               <Loader2 className="w-3 h-3 animate-spin text-sky-500" />
+               <span className="text-[11px] font-semibold">
+-                {queue.total} deploying{queue.queued > 0 ? `, ${queue.queued} queued` : ""}
++                {queue.total} deploying
+               </span>
+             </Link>
+           )}
+@@ -128,17 +262,19 @@ export function AppShell({
+             <Settings className="w-4 h-4" />
+           </button>
+           <div className="w-px h-5 bg-slate-200 mx-1" />
++          
+           <div className="relative">
+             <button
+               onClick={() => setProfileOpen(!profileOpen)}
+               className="flex items-center gap-2 h-8 px-2 rounded-lg hover:bg-slate-100 transition-colors"
+             >
+-              <div className="w-6 h-6 rounded-full bg-gradient-to-br from-sky-400 to-violet-500 flex items-center justify-center text-white text-xs font-bold">
+-                A
++              <div className="w-6 h-6 rounded-full bg-gradient-to-br from-sky-400 to-violet-500 flex items-center justify-center text-white text-xs font-bold overflow-hidden">
++                {user?.avatar_url || user?.avatarUrl ? <img src={user.avatar_url || user.avatarUrl} alt="Avatar" className="w-full h-full object-cover" /> : user?.name?.[0]?.toUpperCase() || "U"}
+               </div>
+-              <span className="text-sm font-medium text-slate-700 hidden sm:block">Asis</span>
++              <span className="text-sm font-medium text-slate-700 hidden sm:block">{user?.name || "User"}</span>
+               <ChevronDown className="w-3 h-3 text-slate-400" />
+             </button>
++            
+             <AnimatePresence>
+               {profileOpen && (
+                 <motion.div
+@@ -149,8 +285,8 @@ export function AppShell({
+                   className="absolute right-0 top-10 w-48 bg-white border border-slate-200 rounded-xl shadow-xl z-50 py-1 overflow-hidden"
+                 >
+                   <div className="px-3 py-2 border-b border-slate-100">
+-                    <p className="text-xs font-semibold text-slate-800">Asis Ghorai</p>
+-                    <p className="text-xs text-slate-400">asis@zenith.link</p>
++                    <p className="text-xs font-semibold text-slate-800">{user?.name || "User"}</p>
++                    <p className="text-xs text-slate-400">{user?.email || "user@zenith.link"}</p>
+                   </div>
+                   {[
+                     { icon: User, label: "Profile" },
+@@ -165,7 +301,7 @@ export function AppShell({
+                     </button>
+                   ))}
+                   <div className="border-t border-slate-100 mt-1" />
+-                  <button className="w-full flex items-center gap-2 px-3 py-2 text-xs font-medium text-red-500 hover:bg-red-50 transition-colors">
++                  <button onClick={handleSignOut} className="w-full flex items-center gap-2 px-3 py-2 text-xs font-medium text-red-500 hover:bg-red-50 transition-colors">
+                     <LogOut className="w-3.5 h-3.5" /> Sign Out
+                   </button>
+                 </motion.div>
+@@ -177,79 +313,359 @@ export function AppShell({
+ 
+       {/* BODY */}
+       <div className="flex flex-1 overflow-hidden">
+-        {/* SIDEBAR */}
+-        <aside className="w-60 shrink-0 bg-white border-r border-slate-200 flex flex-col overflow-y-auto z-20">
+-          <div className="p-3">
+-            <Link
+-              href="/domains"
+-              className="mb-3 flex items-center justify-center gap-2 h-10 rounded-xl bg-slate-900 text-white text-sm font-medium hover:bg-slate-800 transition-colors"
+-            >
+-              <Plus className="w-4 h-4" />
+-              Add Domain
+-            </Link>
+-            <ul className="space-y-0.5">
+-              {NAV_ITEMS.map((item) => {
+-                const { icon: Icon, label } = item;
+-                const badge = "badge" in item ? item.badge : undefined;
+-                const href = "href" in item ? item.href : undefined;
+-                const isActive = label === activeNav;
+-
+-                const inner = (
+-                  <>
+-                    <Icon
+-                      className={`w-4 h-4 shrink-0 ${isActive
+-                        ? "text-slate-900"
+-                        : badge
+-                          ? "text-slate-300"
+-                          : "text-slate-400 group-hover/item:text-slate-600"
+-                        }`}
+-                    />
+-                    <span className="flex-1 text-left leading-none">{label}</span>
+-                    {badge && (
+-                      <span className="text-[9px] font-bold tracking-wide px-1.5 py-0.5 rounded-full bg-slate-100 text-slate-400 border border-slate-200">
+-                        {badge}
+-                      </span>
+-                    )}
+-                  </>
+-                );
+-
+-                const itemClass = `w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-sm font-medium transition-all group/item ${isActive
+-                  ? "bg-slate-100 text-slate-900 font-semibold"
+-                  : badge
+-                    ? "text-slate-400 cursor-default"
+-                    : "text-slate-600 hover:bg-slate-50 hover:text-slate-900"
+-                  }`;
+-
+-                return (
+-                  <li key={label}>
+-                    {href && !badge ? (
+-                      <Link href={href} className={itemClass}>
+-                        {inner}
+-                      </Link>
+-                    ) : (
+-                      <button disabled={!!badge} className={itemClass}>
+-                        {inner}
+-                      </button>
+-                    )}
+-                  </li>
+-                );
+-              })}
+-            </ul>
+-          </div>
+-
+-          <div className="mt-auto border-t border-slate-100 p-3">
+-            <div className="flex items-center gap-2.5 px-2 py-2 rounded-lg hover:bg-slate-50 cursor-pointer transition-colors group">
+-              <div className="w-8 h-8 rounded-full bg-gradient-to-br from-sky-400 to-violet-500 flex items-center justify-center text-white text-sm font-bold shrink-0">
+-                A
++        {/* SIDEBAR WRAPPER */}
++        {activeSubMenu === "Supaspire" ? (
++          <div className="flex shrink-0 z-20 bg-[#fafafa] border-r border-slate-200">
++            {/* Left Pane (Main Module Icons) */}
++            <div className="w-[60px] border-r border-slate-200/60 flex flex-col items-center py-4 justify-between h-full bg-[#fafafa]">
++              <div className="w-full flex flex-col items-center gap-3">
++                {/* Back button to main cloudrik menu */}
++                <button
++                  onClick={() => {
++                    setActiveSubMenu(null);
++                    navigate("/dashboard");
++                  }}
++                  className="w-9 h-9 rounded-lg flex items-center justify-center text-slate-500 hover:bg-slate-100 hover:text-slate-900 transition-colors mb-2"
++                  title="Back to CloudRik Menu"
++                >
++                  <ChevronLeft className="w-4.5 h-4.5" />
++                </button>
++                
++                {/* Icons of main sub-items */}
++                {SUPASPIRE_SUB_ITEMS.filter(item => hasProject || item.label === "Overview").map((item) => {
++                  const { icon: Icon, label } = item;
++                  const isActive = label === activeSubItem;
++                  return (
++                    <button
++                      key={label}
++                      onClick={() => setActiveSubItem(label)}
++                      className={`w-9 h-9 rounded-lg flex items-center justify-center transition-all ${
++                        isActive
++                          ? "bg-slate-200/60 text-slate-900 shadow-[0_1px_2px_rgba(0,0,0,0.02)]"
++                          : "text-slate-500 hover:bg-slate-100/70 hover:text-slate-900"
++                      }`}
++                      title={label}
++                    >
++                      <Icon className="w-[18px] h-[18px] stroke-[1.8px]" />
++                    </button>
++                  );
++                })}
+               </div>
+-              <div className="flex-1 min-w-0">
+-                <p className="text-xs font-semibold text-slate-800 truncate">Asis Ghorai</p>
+-                <p className="text-[10px] text-slate-400 truncate">Pro Plan</p>
++
++              {/* Profile Avatar */}
++              <div 
++                onClick={handleSignOut}
++                className="w-8 h-8 rounded-full bg-gradient-to-br from-sky-400 to-violet-500 flex items-center justify-center text-white text-[11px] font-bold overflow-hidden cursor-pointer"
++                title="Sign out"
++              >
++                {user?.avatar_url || user?.avatarUrl ? <img src={user.avatar_url || user.avatarUrl} alt="Avatar" className="w-full h-full object-cover" /> : user?.name?.[0]?.toUpperCase() || "U"}
+               </div>
+-              <LogOut className="w-3.5 h-3.5 text-slate-300 group-hover:text-red-400 transition-colors shrink-0" />
+             </div>
++
++            {/* Right Pane (Subtabs list with icons) */}
++            {activeSubItem !== "Overview" && (
++              <div className="w-[210px] flex flex-col h-full bg-[#fafafa]">
++                <div className="p-3 border-b border-slate-100 bg-[#fafafa]">
++                  <span className="text-[11px] font-bold text-slate-700 uppercase tracking-wider">{activeSubItem}</span>
++                </div>
++                <div className="flex-1 overflow-y-auto thin-scrollbar p-3 space-y-4">
++                  
++                  {/* Database Subtabs */}
++                  {activeSubItem === "Database" && (
++                    <div className="space-y-4">
++                      {[
++                        {
++                          section: "Database Management",
++                          items: [
++                            { id: "Schema Visualizer", label: "Schema Visualizer", icon: Layers },
++                            { id: "Tables", label: "Tables", icon: Database },
++                            { id: "Functions", label: "Functions", icon: Terminal },
++                            { id: "Triggers", label: "Triggers", icon: Zap },
++                            { id: "Extensions", label: "Extensions", icon: Settings },
++                            { id: "Indexes", label: "Indexes", icon: Key },
++                          ]
++                        },
++                        {
++                          section: "Configuration",
++                          items: [
++                            { id: "Roles", label: "Roles", icon: Users },
++                            { id: "Policies", label: "Policies", icon: Shield },
++                            { id: "Settings", label: "Settings", icon: Settings },
++                          ]
++                        },
++                        {
++                          section: "Platform",
++                          items: [
++                            { id: "Backups", label: "Backups", icon: History },
++                            { id: "Database Webhooks", label: "Database Webhooks", icon: Webhook },
++                          ]
++                        }
++                      ].map((sec) => (
++                        <div key={sec.section}>
++                          <span className="text-[9px] font-bold text-slate-400 uppercase tracking-wider block px-2 mb-1.5 select-none">{sec.section}</span>
++                          <div className="space-y-0.5">
++                            {sec.items.map((sub) => {
++                              const isSubActive = sub.id === activeSubTab;
++                              return (
++                                <button
++                                  key={sub.id}
++                                  onClick={() => onSubTabChange && onSubTabChange(sub.id)}
++                                  className={`w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-xs font-semibold text-left transition-colors ${
++                                    isSubActive
++                                      ? "bg-slate-200/60 text-slate-900 font-bold"
++                                      : "text-slate-600 hover:bg-slate-100/70"
++                                  }`}
++                                >
++                                  <sub.icon className="w-3.5 h-3.5 text-slate-500 shrink-0" />
++                                  <span className="truncate">{sub.label}</span>
++                                </button>
++                              );
++                            })}
++                          </div>
++                        </div>
++                      ))}
++                    </div>
++                  )}
++
++                  {/* Authentication Subtabs */}
++                  {activeSubItem === "Authentication" && (
++                    <div className="space-y-4">
++                      {[
++                        {
++                          section: "Users",
++                          items: [
++                            { id: "Users", label: "Users", icon: Users },
++                          ]
++                        },
++                        {
++                          section: "Configuration",
++                          items: [
++                            { id: "Providers", label: "Providers", icon: Key },
++                            { id: "Templates", label: "Templates", icon: Lock },
++                            { id: "Settings", label: "Settings", icon: Settings },
++                          ]
++                        }
++                      ].map((sec) => (
++                        <div key={sec.section}>
++                          <span className="text-[9px] font-bold text-slate-400 uppercase tracking-wider block px-2 mb-1.5 select-none">{sec.section}</span>
++                          <div className="space-y-0.5">
++                            {sec.items.map((sub) => {
++                              const isSubActive = sub.id === activeSubTab;
++                              return (
++                                <button
++                                  key={sub.id}
++                                  onClick={() => onSubTabChange && onSubTabChange(sub.id)}
++                                  className={`w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-xs font-semibold text-left transition-colors ${
++                                    isSubActive
++                                      ? "bg-slate-200/60 text-slate-900 font-bold"
++                                      : "text-slate-600 hover:bg-slate-100/70"
++                                  }`}
++                                >
++                                  <sub.icon className="w-3.5 h-3.5 text-slate-500 shrink-0" />
++                                  <span className="truncate">{sub.label}</span>
++                                </button>
++                              );
++                            })}
++                          </div>
++                        </div>
++                      ))}
++                    </div>
++                  )}
++
++                  {/* Storage Subtabs */}
++                  {activeSubItem === "Storage" && (
++                    <div className="space-y-4">
++                      {[
++                        {
++                          section: "File Storage",
++                          items: [
++                            { id: "Buckets", label: "Buckets", icon: Package },
++                            { id: "Usage", label: "Usage", icon: Activity },
++                            { id: "Settings", label: "Settings", icon: Settings },
++                          ]
++                        }
++                      ].map((sec) => (
++                        <div key={sec.section}>
++                          <span className="text-[9px] font-bold text-slate-400 uppercase tracking-wider block px-2 mb-1.5 select-none">{sec.section}</span>
++                          <div className="space-y-0.5">
++                            {sec.items.map((sub) => {
++                              const isSubActive = sub.id === activeSubTab;
++                              return (
++                                <button
++                                  key={sub.id}
++                                  onClick={() => onSubTabChange && onSubTabChange(sub.id)}
++                                  className={`w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-xs font-semibold text-left transition-colors ${
++                                    isSubActive
++                                      ? "bg-slate-200/60 text-slate-900 font-bold"
++                                      : "text-slate-600 hover:bg-slate-100/70"
++                                  }`}
++                                >
++                                  <sub.icon className="w-3.5 h-3.5 text-slate-500 shrink-0" />
++                                  <span className="truncate">{sub.label}</span>
++                                </button>
++                              );
++                            })}
++                          </div>
++                        </div>
++                      ))}
++                    </div>
++                  )}
++
++                  {/* Real-time Subtabs */}
++                  {activeSubItem === "Real-time" && (
++                    <div className="space-y-4">
++                      {[
++                        {
++                          section: "Live Channels",
++                          items: [
++                            { id: "Inspector", label: "Inspector", icon: Activity },
++                            { id: "Settings", label: "Settings", icon: Settings },
++                          ]
++                        }
++                      ].map((sec) => (
++                        <div key={sec.section}>
++                          <span className="text-[9px] font-bold text-slate-400 uppercase tracking-wider block px-2 mb-1.5 select-none">{sec.section}</span>
++                          <div className="space-y-0.5">
++                            {sec.items.map((sub) => {
++                              const isSubActive = sub.id === activeSubTab;
++                              return (
++                                <button
++                                  key={sub.id}
++                                  onClick={() => onSubTabChange && onSubTabChange(sub.id)}
++                                  className={`w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-xs font-semibold text-left transition-colors ${
++                                    isSubActive
++                                      ? "bg-slate-200/60 text-slate-900 font-bold"
++                                      : "text-slate-600 hover:bg-slate-100/70"
++                                  }`}
++                                >
++                                  <sub.icon className="w-3.5 h-3.5 text-slate-500 shrink-0" />
++                                  <span className="truncate">{sub.label}</span>
++                                </button>
++                              );
++                            })}
++                          </div>
++                        </div>
++                      ))}
++                    </div>
++                  )}
++
++                  {/* Functions Subtabs */}
++                  {activeSubItem === "Functions" && (
++                    <div className="space-y-4">
++                      {[
++                        {
++                          section: "Edge Functions",
++                          items: [
++                            { id: "Functions", label: "Functions", icon: Terminal },
++                            { id: "Secrets", label: "Secrets", icon: Key },
++                          ]
++                        }
++                      ].map((sec) => (
++                        <div key={sec.section}>
++                          <span className="text-[9px] font-bold text-slate-400 uppercase tracking-wider block px-2 mb-1.5 select-none">{sec.section}</span>
++                          <div className="space-y-0.5">
++                            {sec.items.map((sub) => {
++                              const isSubActive = sub.id === activeSubTab;
++                              return (
++                                <button
++                                  key={sub.id}
++                                  onClick={() => onSubTabChange && onSubTabChange(sub.id)}
++                                  className={`w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-xs font-semibold text-left transition-colors ${
++                                    isSubActive
++                                      ? "bg-slate-200/60 text-slate-900 font-bold"
++                                      : "text-slate-600 hover:bg-slate-100/70"
++                                  }`}
++                                >
++                                  <sub.icon className="w-3.5 h-3.5 text-slate-500 shrink-0" />
++                                  <span className="truncate">{sub.label}</span>
++                                </button>
++                              );
++                            })}
++                          </div>
++                        </div>
++                      ))}
++                    </div>
++                  )}
++
++                </div>
++              </div>
++            )}
+           </div>
+-        </aside>
++        ) : (
++          /* Normal Workspace Sidebar */
++          <aside className="w-60 shrink-0 bg-white border-r border-slate-200 flex flex-col overflow-y-auto z-20">
++            <div className="p-3">
++              <Link
++                href="/domains"
++                className="mb-3 flex items-center justify-center gap-2 h-10 rounded-xl bg-slate-900 text-white text-sm font-medium hover:bg-slate-800 transition-colors"
++              >
++                <Plus className="w-4 h-4" />
++                Add Domain
++              </Link>
++              <ul className="space-y-0.5">
++                {NAV_ITEMS.map((item) => {
++                  const { icon: Icon, label } = item;
++                  const badge = "badge" in item ? (item as any).badge : undefined;
++                  const href = "href" in item ? item.href : undefined;
++                  const isActive = label === activeNav;
++
++                  const inner = (
++                    <>
++                      <Icon
++                        className={`w-4 h-4 shrink-0 ${isActive
++                          ? "text-slate-900"
++                          : badge
++                            ? "text-slate-300"
++                            : "text-slate-400 group-hover/item:text-slate-600"
++                          }`}
++                      />
++                      <span className="flex-1 text-left leading-none">{label}</span>
++                      {badge && (
++                        <span className="text-[9px] font-bold tracking-wide px-1.5 py-0.5 rounded-full bg-slate-100 text-slate-400 border border-slate-200">
++                          {badge}
++                        </span>
++                      )}
++                    </>
++                  );
++
++                  const itemClass = `w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-sm font-medium transition-all group/item ${isActive
++                    ? "bg-slate-100 text-slate-900 font-semibold"
++                    : badge
++                      ? "text-slate-400 cursor-default"
++                      : "text-slate-600 hover:bg-slate-50 hover:text-slate-900"
++                    }`;
++
++                  return (
++                    <li key={label}>
++                      {href && !badge ? (
++                        <Link href={href} className={itemClass}>
++                          {inner}
++                        </Link>
++                      ) : (
++                        <button disabled={!!badge} className={itemClass}>
++                          {inner}
++                        </button>
++                      )}
++                    </li>
++                  );
++                })}
++              </ul>
++            </div>
++
++            <div className="mt-auto border-t border-slate-100 p-3">
++              <div className="flex items-center gap-2.5 px-2 py-2 rounded-lg hover:bg-slate-50 cursor-pointer transition-colors group">
++                <div className="w-8 h-8 rounded-full bg-gradient-to-br from-sky-400 to-violet-500 flex items-center justify-center text-white text-sm font-bold shrink-0">
++                  A
++                </div>
++                <div className="flex-1 min-w-0">
++                  <p className="text-xs font-semibold text-slate-800 truncate">Asis Ghorai</p>
++                  <p className="text-[10px] text-slate-400 truncate">Pro Plan</p>
++                </div>
++                <LogOut className="w-3.5 h-3.5 text-slate-300 group-hover:text-red-400 transition-colors shrink-0" />
++              </div>
++            </div>
++          </aside>
++        )}
+ 
+         {/* MAIN CONTENT */}
+         <main className="flex-1 overflow-y-auto bg-neutral-50">{children}</main>
+diff --git a/artifacts/zenith-os/src/hooks/useAuth.ts b/artifacts/zenith-os/src/hooks/useAuth.ts
+index 298af20..e6ef784 100644
+--- a/artifacts/zenith-os/src/hooks/useAuth.ts
++++ b/artifacts/zenith-os/src/hooks/useAuth.ts
+@@ -6,6 +6,7 @@ interface User {
+   name: string;
+   email: string;
+   avatarUrl?: string;
++  avatar_url?: string;
+   provider: string;
+ }
+ 
+diff --git a/artifacts/zenith-os/src/index.css b/artifacts/zenith-os/src/index.css
+index 447864a..923d068 100644
+--- a/artifacts/zenith-os/src/index.css
++++ b/artifacts/zenith-os/src/index.css
+@@ -278,4 +278,19 @@
+   .border.hover-elevate:not(.no-hover-interaction-elevate)::after {
+     inset: -1px;
+   }
++
++  .thin-scrollbar::-webkit-scrollbar {
++    width: 6px;
++    height: 6px;
++  }
++  .thin-scrollbar::-webkit-scrollbar-track {
++    background: transparent;
++  }
++  .thin-scrollbar::-webkit-scrollbar-thumb {
++    background: rgba(0, 0, 0, 0.08);
++    border-radius: 9999px;
++  }
++  .thin-scrollbar::-webkit-scrollbar-thumb:hover {
++    background: rgba(0, 0, 0, 0.16);
++  }
+ }
+\ No newline at end of file
+diff --git a/artifacts/zenith-os/src/lib/deploy.ts b/artifacts/zenith-os/src/lib/deploy.ts
+index 9a86d58..4a5bed1 100644
+--- a/artifacts/zenith-os/src/lib/deploy.ts
++++ b/artifacts/zenith-os/src/lib/deploy.ts
+@@ -2,6 +2,8 @@ export const DEPLOY_API_URL = "/api-proxy/deploy";
+ export const DEPLOY_STREAM_URL = "/api-proxy/deploy/stream";
+ export const PROJECTS_API_URL = "/api-proxy/projects";
+ export const WEBHOOK_INFO_URL = "/api-proxy/webhook/info";
++export const WEBHOOK_PING_STATUS_URL = "/api-proxy/webhook/ping-status";
++export const WEBHOOK_DELIVERIES_URL = "/api-proxy/webhook/deliveries";
+ export const ENV_VARS_API_URL = "/api-proxy/projects";
+ 
+ export type WebhookInfo = {
+@@ -11,37 +13,133 @@ export type WebhookInfo = {
+   slug: string;
+ };
+ 
+-export async function getWebhookInfo(projectName: string): Promise<WebhookInfo> {
+-  const res = await fetch(`${WEBHOOK_INFO_URL}/${encodeURIComponent(projectName)}`);
++export type WebhookPingStatus = {
++  verified: boolean;
++  verifiedAt: string | null;
++  source: string | null;
++};
++
++export type WebhookDelivery = {
++  id: string;
++  event: string;
++  status: "building" | "success" | "failed";
++  branch: string;
++  commit: string;
++  message: string;
++  author: string;
++  pusher: string;
++  repo: string;
++  compareUrl: string;
++  timestamp: string;
++  completedAt: string | null;
++};
++
++import { getAuthToken } from "./projects";
++
++export async function getWebhookInfo(projectName: string): Promise<WebhookInfo | null> {
++  const token = getAuthToken();
++  const workspaceId = localStorage.getItem("cloudrik-workspace");
++  let url = `${WEBHOOK_INFO_URL}/${encodeURIComponent(projectName)}`;
++  if (workspaceId) url += `?workspaceId=${workspaceId}`;
++
++  const res = await fetch(url, {
++    headers: token ? { Authorization: `Bearer ${token}` } : {}
++  });
++  if (res.status === 404) return null;
+   if (!res.ok) throw new Error("Failed to fetch webhook info");
+   return res.json() as Promise<WebhookInfo>;
+ }
+ 
++export async function generateWebhook(projectName: string): Promise<WebhookInfo> {
++  const token = getAuthToken();
++  const workspaceId = localStorage.getItem("cloudrik-workspace");
++  let url = `${WEBHOOK_INFO_URL}/${encodeURIComponent(projectName)}`;
++  if (workspaceId) url += `?workspaceId=${workspaceId}`;
++
++  const res = await fetch(url, {
++    method: "POST",
++    headers: token ? { Authorization: `Bearer ${token}` } : {}
++  });
++  if (!res.ok) throw new Error("Failed to generate webhook credentials");
++  return res.json() as Promise<WebhookInfo>;
++}
++
++/** Check if a real GitHub ping has arrived for this project's webhook */
++export async function getWebhookPingStatus(projectName: string): Promise<WebhookPingStatus> {
++  const token = getAuthToken();
++  const workspaceId = localStorage.getItem("cloudrik-workspace");
++  let url = `${WEBHOOK_PING_STATUS_URL}/${encodeURIComponent(projectName)}`;
++  if (workspaceId) url += `?workspaceId=${workspaceId}`;
++
++  const res = await fetch(url, {
++    headers: token ? { Authorization: `Bearer ${token}` } : {}
++  });
++  if (!res.ok) return { verified: false, verifiedAt: null, source: null };
++  return res.json() as Promise<WebhookPingStatus>;
++}
++
++/** Fetch real GitHub push delivery logs for a project */
++export async function getWebhookDeliveries(projectName: string): Promise<WebhookDelivery[]> {
++  const token = getAuthToken();
++  const workspaceId = localStorage.getItem("cloudrik-workspace");
++  let url = `${WEBHOOK_DELIVERIES_URL}/${encodeURIComponent(projectName)}`;
++  if (workspaceId) url += `?workspaceId=${workspaceId}`;
++
++  const res = await fetch(url, {
++    headers: token ? { Authorization: `Bearer ${token}` } : {}
++  });
++  if (!res.ok) return [];
++  const data = await res.json() as { deliveries: WebhookDelivery[] };
++  return data.deliveries || [];
++}
++
+ // ── Environment Variables ────────────────────────────────────────────────────
+ 
+ export type EnvVars = Record<string, string>;
+ 
+ export async function getEnvVars(projectName: string): Promise<EnvVars> {
+-  const res = await fetch(`${ENV_VARS_API_URL}/${encodeURIComponent(projectName)}/env`, {
++  const token = getAuthToken();
++  const workspaceId = localStorage.getItem("cloudrik-workspace");
++  let url = `${ENV_VARS_API_URL}/${encodeURIComponent(projectName)}/env`;
++  if (workspaceId) url += `?workspaceId=${workspaceId}`;
++
++  const res = await fetch(url, {
+     signal: AbortSignal.timeout(8000),
++    headers: token ? { Authorization: `Bearer ${token}` } : {}
+   });
+   if (!res.ok) throw new Error("Failed to fetch env vars");
+   return res.json() as Promise<EnvVars>;
+ }
+ 
+ export async function saveEnvVars(projectName: string, vars: EnvVars): Promise<void> {
+-  const res = await fetch(`${ENV_VARS_API_URL}/${encodeURIComponent(projectName)}/env`, {
++  const token = getAuthToken();
++  const workspaceId = localStorage.getItem("cloudrik-workspace");
++  let url = `${ENV_VARS_API_URL}/${encodeURIComponent(projectName)}/env`;
++  if (workspaceId) url += `?workspaceId=${workspaceId}`;
++
++  const res = await fetch(url, {
+     method: "POST",
+-    headers: { "Content-Type": "application/json" },
++    headers: { 
++      "Content-Type": "application/json",
++      ...(token ? { Authorization: `Bearer ${token}` } : {})
++    },
+     body: JSON.stringify({ vars }),
+   });
+   if (!res.ok) throw new Error("Failed to save env vars");
+ }
+ 
+ export async function deleteEnvVar(projectName: string, key: string): Promise<void> {
++  const token = getAuthToken();
++  const workspaceId = localStorage.getItem("cloudrik-workspace");
++  let url = `${ENV_VARS_API_URL}/${encodeURIComponent(projectName)}/env/${encodeURIComponent(key)}`;
++  if (workspaceId) url += `?workspaceId=${workspaceId}`;
++
+   const res = await fetch(
+-    `${ENV_VARS_API_URL}/${encodeURIComponent(projectName)}/env/${encodeURIComponent(key)}`,
+-    { method: "DELETE" }
++    url,
++    { 
++      method: "DELETE",
++      headers: token ? { Authorization: `Bearer ${token}` } : {}
++    }
+   );
+   if (!res.ok) throw new Error("Failed to delete env var");
+ }
+@@ -95,7 +193,8 @@ function extractErrorMessage(payload: DeployApiPayload, fallback: string): strin
+   return fallback;
+ }
+ 
+-export function normalizeUrlForDisplay(value: string): string {
++export function normalizeUrlForDisplay(value?: string | null): string {
++  if (!value) return "";
+   const trimmed = value.trim();
+   if (/^https?:\/\//i.test(trimmed)) return trimmed;
+   if (/^\d+\.\d+\.\d+\.\d+(:\d+)?/.test(trimmed)) return `http://${trimmed}`;
+@@ -116,7 +215,9 @@ export function streamDeployment(
+   onEvent: (event: StreamEvent) => void,
+   onError: (err: Error) => void
+ ): () => void {
+-  const url = `${DEPLOY_STREAM_URL}?repo=${encodeURIComponent(repo)}`;
++  const token = getAuthToken();
++  const tokenParam = token ? `&token=${encodeURIComponent(token)}` : "";
++  const url = `${DEPLOY_STREAM_URL}?repo=${encodeURIComponent(repo)}${tokenParam}`;
+   const es = new EventSource(url);
+ 
+   es.onmessage = (e) => {
+@@ -138,9 +239,13 @@ export function streamDeployment(
+ }
+ 
+ export async function requestDeployment(repo: string): Promise<DeployApiResult> {
++  const token = getAuthToken();
+   const response = await fetch(DEPLOY_API_URL, {
+     method: "POST",
+-    headers: { "Content-Type": "application/json" },
++    headers: { 
++      "Content-Type": "application/json",
++      ...(token ? { Authorization: `Bearer ${token}` } : {})
++    },
+     body: JSON.stringify({ repo }),
+   });
+ 
+diff --git a/artifacts/zenith-os/src/lib/projects.ts b/artifacts/zenith-os/src/lib/projects.ts
+index 1b81096..7e1a1c2 100644
+--- a/artifacts/zenith-os/src/lib/projects.ts
++++ b/artifacts/zenith-os/src/lib/projects.ts
+@@ -25,9 +25,31 @@ export function getProjects(): Project[] {
+   }
+ }
+ 
++export function getAuthToken(): string | null {
++  if (typeof window === "undefined") return null;
++  try {
++    const raw = localStorage.getItem("cloudrik-auth");
++    if (!raw) return null;
++    const parsed = JSON.parse(raw);
++    return parsed?.state?.token || null;
++  } catch {
++    return null;
++  }
++}
++
+ export async function fetchProjectsFromServer(): Promise<Project[]> {
+   try {
+-    const res = await fetch(PROJECTS_API_URL, { signal: AbortSignal.timeout(8000) });
++    const token = getAuthToken();
++    const workspaceId = typeof window !== "undefined" ? localStorage.getItem("cloudrik-workspace") : null;
++    let url = PROJECTS_API_URL;
++    if (workspaceId) {
++      url += `?workspaceId=${workspaceId}`;
++    }
++
++    const res = await fetch(url, { 
++      signal: AbortSignal.timeout(8000),
++      headers: token ? { Authorization: `Bearer ${token}` } : {}
++    });
+     if (!res.ok) return [];
+     const data = await res.json() as Array<{
+       name: string;
+@@ -55,8 +77,10 @@ export async function fetchProjectsFromServer(): Promise<Project[]> {
+ 
+ export async function deleteProjectFromServer(name: string): Promise<boolean> {
+   try {
++    const token = getAuthToken();
+     const res = await fetch(`${PROJECTS_API_URL.replace("/projects", "")}/projects/${encodeURIComponent(name)}`, {
+       method: "DELETE",
++      headers: token ? { Authorization: `Bearer ${token}` } : {}
+     });
+     return res.ok;
+   } catch {
+diff --git a/artifacts/zenith-os/src/pages/dashboard.tsx b/artifacts/zenith-os/src/pages/dashboard.tsx
+index 2bd341a..a6f4b38 100644
+--- a/artifacts/zenith-os/src/pages/dashboard.tsx
++++ b/artifacts/zenith-os/src/pages/dashboard.tsx
+@@ -21,6 +21,7 @@ import {
+   Trash2,
+   ExternalLink,
+   Code2,
++  Moon,
+ } from "lucide-react";
+ 
+ import {
+@@ -74,6 +75,8 @@ function StatusDot({ status }: { status: string }) {
+     return <span className="w-2 h-2 rounded-full bg-emerald-500 shadow-[0_0_6px_rgba(16,185,129,0.7)]" />;
+   if (status === "failed")
+     return <span className="w-2 h-2 rounded-full bg-red-500 shadow-[0_0_6px_rgba(239,68,68,0.7)]" />;
++  if (status === "stopped")
++    return <span className="w-2 h-2 rounded-full bg-slate-400 shadow-[0_0_6px_rgba(148,163,184,0.5)]" />;
+   return <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse shadow-[0_0_6px_rgba(251,191,36,0.7)]" />;
+ }
+ 
+@@ -90,6 +93,12 @@ function StatusBadge({ status }: { status: string }) {
+         <XCircle className="w-3 h-3" /> Failed
+       </span>
+     );
++  if (status === "stopped")
++    return (
++      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-slate-100 border border-slate-300 text-slate-600 text-xs font-medium">
++        Stopped
++      </span>
++    );
+   return (
+     <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-50 border border-amber-200 text-amber-700 text-xs font-medium">
+       <Loader2 className="w-3 h-3 animate-spin" /> Building
+@@ -131,9 +140,9 @@ function ProjectCard({
+ 
+   return (
+     <motion.div
+-      initial={{ opacity: 0, y: 14 }}
+-      animate={{ opacity: 1, y: 0 }}
+-      transition={{ duration: 0.38, delay: index * 0.08, ease: [0.16, 1, 0.3, 1] }}
++      initial={{ opacity: 0 }}
++      animate={{ opacity: 1 }}
++      transition={{ duration: 0.2, delay: index * 0.05 }}
+       className="bg-white border border-slate-200 rounded-2xl overflow-hidden hover:border-slate-300 hover:shadow-md hover:shadow-slate-100 transition-all duration-250"
+     >
+       {/* Header */}
+@@ -215,9 +224,9 @@ function ProjectCard({
+ function EmptyState() {
+   return (
+     <motion.div
+-      initial={{ opacity: 0, y: 16 }}
+-      animate={{ opacity: 1, y: 0 }}
+-      transition={{ duration: 0.45 }}
++      initial={{ opacity: 0 }}
++      animate={{ opacity: 1 }}
++      transition={{ duration: 0.2 }}
+       className="bg-white border border-slate-200 rounded-2xl mb-8"
+     >
+       <div className="flex flex-col items-center justify-center py-14 px-8 text-center">
+@@ -258,10 +267,10 @@ export default function Dashboard() {
+     if (server.length > 0) {
+       const serverNames = new Set(server.map((p) => p.name));
+       const localOnly = local.filter((p) => !serverNames.has(p.name));
+-      setProjects([...server, ...localOnly]);
++      setProjects([...server, ...localOnly].sort((a, b) => b.deployedAt - a.deployedAt));
+     } else {
+-      setProjects(local);
+-      setServerLoading(false);
++      setProjects([]);
++      localStorage.removeItem("zenith.projects");
+     }
+   }
+ 
+@@ -294,9 +303,9 @@ export default function Dashboard() {
+       <div className="max-w-6xl mx-auto px-6 py-6">
+         {/* Page Header */}
+         <motion.div
+-          initial={{ opacity: 0, y: -8 }}
+-          animate={{ opacity: 1, y: 0 }}
+-          transition={{ duration: 0.4 }}
++          initial={{ opacity: 0 }}
++          animate={{ opacity: 1 }}
++          transition={{ duration: 0.2 }}
+           className="flex items-center justify-between mb-6"
+         >
+           <div>
+@@ -336,6 +345,11 @@ export default function Dashboard() {
+               <ProjectCard key={project.id} project={project} index={i} onDelete={handleDelete} />
+             ))}
+           </div>
++        ) : serverLoading ? (
++          <div className="flex flex-col items-center justify-center py-20 mb-8 bg-white border border-slate-200 rounded-2xl text-slate-400">
++            <Loader2 className="w-8 h-8 animate-spin mb-4 text-slate-300" />
++            <span className="text-sm font-medium">Loading workspace...</span>
++          </div>
+         ) : (
+           <EmptyState />
+         )}
+@@ -344,9 +358,9 @@ export default function Dashboard() {
+ 
+         {/* Stats */}
+         <motion.div
+-          initial={{ opacity: 0, y: 12 }}
+-          animate={{ opacity: 1, y: 0 }}
+-          transition={{ duration: 0.5, delay: 0.3 }}
++          initial={{ opacity: 0 }}
++          animate={{ opacity: 1 }}
++          transition={{ duration: 0.2 }}
+         >
+           <div className="flex items-center gap-2 mb-4">
+             <Activity className="w-4 h-4 text-slate-400" />
+@@ -360,9 +374,9 @@ export default function Dashboard() {
+             ].map(({ label, value, sub, icon: Icon, color, bg, border }, i) => (
+               <motion.div
+                 key={label}
+-                initial={{ opacity: 0, y: 10 }}
+-                animate={{ opacity: 1, y: 0 }}
+-                transition={{ duration: 0.4, delay: 0.35 + i * 0.08 }}
++                initial={{ opacity: 0 }}
++                animate={{ opacity: 1 }}
++                transition={{ duration: 0.2 }}
+                 className="bg-white border border-slate-200 rounded-2xl p-5 hover:shadow-md hover:shadow-slate-100 transition-all"
+               >
+                 <div className="flex items-center justify-between mb-3">
+@@ -385,9 +399,9 @@ export default function Dashboard() {
+ 
+         {/* Usage */}
+         <motion.div
+-          initial={{ opacity: 0, y: 12 }}
+-          animate={{ opacity: 1, y: 0 }}
+-          transition={{ duration: 0.5, delay: 0.4 }}
++          initial={{ opacity: 0 }}
++          animate={{ opacity: 1 }}
++          transition={{ duration: 0.2 }}
+           className="bg-white border border-slate-200 rounded-2xl overflow-hidden mb-6"
+         >
+           <div className="flex items-center justify-between px-5 py-4 border-b border-slate-100">
+@@ -403,8 +417,8 @@ export default function Dashboard() {
+           <div className="px-5 py-4 space-y-4">
+             {[
+               { label: "Deployments", used: projects.length, total: 100, display: `${projects.length} / 100`, color: "bg-sky-500", trackColor: "bg-sky-100" },
+-              { label: "Bandwidth", used: 120, total: 10240, display: "120 MB / 10 GB", color: "bg-violet-500", trackColor: "bg-violet-100" },
+-              { label: "Builds", used: projects.length + 2, total: 200, display: `${projects.length + 2} / 200`, color: "bg-emerald-500", trackColor: "bg-emerald-100" },
++              { label: "Bandwidth", used: 0, total: 10240, display: "0 MB / 10 GB", color: "bg-violet-500", trackColor: "bg-violet-100" },
++              { label: "Builds", used: projects.length, total: 200, display: `${projects.length} / 200`, color: "bg-emerald-500", trackColor: "bg-emerald-100" },
+             ].map(({ label, used, total, display, color, trackColor }) => {
+               const pct = Math.min((used / total) * 100, 100);
+               return (
+diff --git a/artifacts/zenith-os/src/pages/deploying.tsx b/artifacts/zenith-os/src/pages/deploying.tsx
+index 6c8975a..7a0be85 100644
+--- a/artifacts/zenith-os/src/pages/deploying.tsx
++++ b/artifacts/zenith-os/src/pages/deploying.tsx
+@@ -28,6 +28,7 @@ import {
+   FileText,
+   ChevronDown,
+   Check,
++  GitBranch,
+ } from "lucide-react";
+ 
+ type StepStatus = "done" | "running" | "pending" | "failed";
+@@ -103,11 +104,11 @@ function useQueryParam(name: string): string | null {
+ 
+ function inferStepIndex(line: string): number {
+   const normalized = line.toLowerCase();
+-  if (normalized.includes("clone") || normalized.includes("cloning") || normalized.includes("repository")) return 0;
+-  if (normalized.includes("install") || normalized.includes("npm") || normalized.includes("pnpm") || normalized.includes("yarn") || normalized.includes("dependencies") || normalized.includes("pip install") || normalized.includes("bundle install")) return 1;
+-  if (normalized.includes("build") || normalized.includes("bundl") || normalized.includes("compil") || normalized.includes("vite") || normalized.includes("webpack")) return 2;
+-  if (normalized.includes("start") || normalized.includes("server") || normalized.includes("running") || normalized.includes("container") || normalized.includes("port") || normalized.includes("docker run")) return 3;
+-  if (normalized.includes("live at") || normalized.includes("deployment complete") || normalized.includes("live") || normalized.includes("success")) return 4;
++  if (normalized.includes("cloning repository") || normalized.startsWith("cloning into") || normalized.includes("cloning repo")) return 0;
++  if (normalized.includes("installing dependencies") || normalized.includes("installing packages") || normalized.includes("installing monorepo dependencies") || normalized.includes("installing next.js")) return 1;
++  if (normalized.includes("building project") || normalized.includes("building...") || normalized.includes("building next.js") || normalized.includes("building:")) return 2;
++  if (normalized.includes("starting server") || normalized.startsWith("container:") || normalized.includes("docker run")) return 3;
++  if (normalized.includes("live at") || normalized.includes("deployment complete") || normalized.includes("success")) return 4;
+   return -1;
+ }
+ 
+@@ -324,7 +325,8 @@ function QueuedScreen({ state }: { state: DeployState }) {
+ 
+ function BuildingScreen({ state }: { state: DeployState }) {
+   const [elapsed, setElapsed] = useState(0);
+-  const terminalRef = useRef<HTMLDivElement>(null);
++  const [expandedStep, setExpandedStep] = useState<number | null>(null);
++  const logContainerRefs = useRef<(HTMLDivElement | null)[]>([]);
+ 
+   useEffect(() => {
+     if (!state.startedAt) return;
+@@ -335,83 +337,134 @@ function BuildingScreen({ state }: { state: DeployState }) {
+     return () => clearInterval(timer);
+   }, [state.startedAt]);
+ 
+-  useEffect(() => {
+-    if (terminalRef.current) {
+-      terminalRef.current.scrollTop = terminalRef.current.scrollHeight;
++  // Group logs
++  const groupedLogs = useMemo(() => {
++    const groups: string[][] = Array(STEP_DEFINITIONS.length).fill(null).map(() => []);
++    let currentStep = 0;
++    for (const line of state.logs) {
++      const inferred = inferStepIndex(line);
++      if (inferred >= 0 && inferred > currentStep) {
++        currentStep = inferred;
++      }
++      groups[currentStep].push(line);
+     }
++    return groups;
+   }, [state.logs]);
+ 
+-  const doneCount = state.steps.filter((step) => step.status === "done").length;
+-  const activeCount = state.steps.some((step) => step.status === "running") ? doneCount + 1 : doneCount;
+-  const overallProgress = Math.round((activeCount / state.steps.length) * 100);
++  // Auto-expand the currently running step
++  useEffect(() => {
++    if (state.status === "building") {
++      const runningIdx = state.steps.findIndex(s => s.status === "running");
++      if (runningIdx >= 0) {
++        setExpandedStep(runningIdx);
++      }
++    }
++  }, [state.steps, state.status]);
++
++  // Auto scroll logs
++  useEffect(() => {
++    if (expandedStep !== null && logContainerRefs.current[expandedStep]) {
++      const el = logContainerRefs.current[expandedStep];
++      if (el) {
++        el.scrollTop = el.scrollHeight;
++      }
++    }
++  }, [state.logs, expandedStep]);
+ 
+   return (
+     <PageShell>
+-      <div className="max-w-6xl mx-auto px-6 py-6 h-full flex flex-col">
+-        <div className="flex items-start justify-between gap-4 mb-5">
+-          <div className="min-w-0">
+-            <div className="flex items-center gap-2 mb-1">
+-              <span className="text-[11px] font-semibold tracking-widest text-slate-400 uppercase">Deployment</span>
+-              <span className="text-slate-300">·</span>
+-              <span className="text-[11px] text-slate-400 font-mono flex items-center gap-1">
+-                <Clock className="w-3 h-3" />
+-                {String(Math.floor(elapsed / 60)).padStart(2, "0")}:{String(elapsed % 60).padStart(2, "0")}
+-              </span>
+-              {state.framework && state.framework !== "detecting..." && state.framework !== "unknown" && (
+-                <>
+-                  <span className="text-slate-300">·</span>
+-                  <span className="text-[11px] font-mono bg-sky-50 text-sky-600 border border-sky-200 px-2 py-0.5 rounded-full">
+-                    {state.framework}
+-                  </span>
+-                </>
+-              )}
+-            </div>
+-            <h1 className="text-xl font-bold text-slate-900 truncate flex items-center gap-2 flex-wrap">
+-              {state.projectName}
+-              <span className="text-slate-300 font-normal">·</span>
+-              <span className="text-sm font-mono text-sky-600 flex items-center gap-1 break-all">
+-                {state.liveUrl}
+-              </span>
+-            </h1>
+-          </div>
+-          <StatusPill status={state.status} />
+-        </div>
++      <div className="max-w-3xl mx-auto px-6 py-10 flex flex-col items-center">
++        <div className="w-full bg-white border border-slate-200 rounded-xl shadow-[0_1px_3px_rgba(15,23,42,0.04),0_8px_24px_-12px_rgba(15,23,42,0.08)] p-6 md:p-8">
++          <h1 className="text-2xl font-bold text-slate-900 mb-6 tracking-tight">Deployment</h1>
+ 
+-        <div className="mb-5">
+-          <div className="h-1 w-full bg-slate-200 rounded-full overflow-hidden">
+-            <div
+-              style={{ width: `${overallProgress}%` }}
+-              className="h-full rounded-full transition-all duration-500 bg-gradient-to-r from-sky-500 via-violet-500 to-emerald-400"
+-            />
++          <div className="flex items-center gap-2 text-sm text-slate-600 mb-6">
++            <Loader2 className="w-4 h-4 animate-spin text-slate-400" />
++            <span>Deployment started {elapsed}s ago...</span>
+           </div>
+-        </div>
+ 
+-        <div className="grid lg:grid-cols-[7fr_3fr] gap-5 flex-1 min-h-0 h-[32rem]">
+-          <Terminal logs={state.logs} live={state.status === "building"} terminalRef={terminalRef} />
++          <div className="border border-slate-200 rounded-xl overflow-hidden mb-6">
++            {state.steps.map((step, idx) => {
++              const isExpanded = expandedStep === idx;
++              const stepLogs = groupedLogs[idx] || [];
++
++              return (
++                <div key={step.key} className={`border-b border-slate-200 last:border-0 ${isExpanded ? "bg-slate-50/50" : "bg-white"} transition-colors`}>
++                  <button 
++                    onClick={() => setExpandedStep(isExpanded ? null : idx)}
++                    className="w-full flex items-center gap-3 px-5 py-4 text-left hover:bg-slate-50 transition-colors"
++                  >
++                    <ChevronRight className={`w-4 h-4 text-slate-400 transition-transform duration-200 ${isExpanded ? "rotate-90" : ""}`} />
++                    <span className={`text-sm font-medium flex-1 ${step.status === "pending" ? "text-slate-400" : "text-slate-700"}`}>
++                      {step.label}
++                    </span>
++                    <div className="shrink-0">
++                      {step.status === "done" ? (
++                        <CheckCircle2 className="w-4 h-4 text-emerald-500" />
++                      ) : step.status === "running" ? (
++                        <Loader2 className="w-4 h-4 text-sky-500 animate-spin" />
++                      ) : step.status === "failed" ? (
++                        <XCircle className="w-4 h-4 text-red-500" />
++                      ) : (
++                        <Clock className="w-4 h-4 text-slate-300" />
++                      )}
++                    </div>
++                  </button>
++
++                  {isExpanded && (
++                    <div className="px-5 pb-4">
++                       <div 
++                         ref={(el) => { logContainerRefs.current[idx] = el; }}
++                         className="bg-white border border-slate-200 rounded-lg p-3 max-h-64 overflow-y-auto font-mono text-[12px] leading-relaxed space-y-0.5 shadow-sm"
++                       >
++                         {stepLogs.length === 0 ? (
++                           <div className="text-slate-400 italic">Waiting for logs...</div>
++                         ) : (
++                           stepLogs.map((line, i) => (
++                             <div
++                                key={i}
++                                className={
++                                  /error|fail|exit code [^0]/i.test(line)
++                                    ? "text-red-500 font-medium"
++                                    : /warn/i.test(line)
++                                      ? "text-amber-500"
++                                      : /success|complete|live at|framework detected/i.test(line)
++                                        ? "text-emerald-500"
++                                        : line.startsWith("→")
++                                          ? "text-sky-500"
++                                          : line.startsWith("=")
++                                            ? "text-violet-500 font-semibold"
++                                            : "text-slate-600"
++                                }
++                              >
++                                {line || "\u00A0"}
++                              </div>
++                           ))
++                         )}
++                         {step.status === "running" && (
++                            <div className="flex items-center gap-1.5 text-sky-500 mt-1">
++                              <span className="animate-pulse">█</span>
++                            </div>
++                         )}
++                       </div>
++                    </div>
++                  )}
++                </div>
++              );
++            })}
++          </div>
+ 
+-          <div className="bg-white border border-slate-200 rounded-2xl shadow-sm flex flex-col overflow-hidden h-full min-h-0">
+-            <div className="flex items-center gap-2 px-5 py-3.5 border-b border-slate-100">
+-              <Rocket className="w-4 h-4 text-slate-400" />
+-              <h2 className="text-sm font-semibold text-slate-800">Deployment Steps</h2>
+-              <span className="ml-auto text-[11px] font-mono text-slate-400">{doneCount}/{state.steps.length}</span>
+-            </div>
+-            <div className="flex-1 min-h-0 overflow-y-auto px-2 py-2">
+-              <ol className="relative">
+-                {state.steps.map((step, idx) => (
+-                  <StepItem key={step.key} num={idx + 1} step={step} isLast={idx === state.steps.length - 1} />
+-                ))}
+-              </ol>
+-            </div>
+-            <div className="p-3 border-t border-slate-100 bg-slate-50">
+-              <div className="flex items-center justify-center gap-2 h-10 text-xs font-medium text-slate-400">
+-                <Loader2 className="w-3.5 h-3.5 animate-spin text-slate-300" />
+-                {state.isFinalizing
+-                  ? "Finalizing live site..."
+-                  : state.logs.length === 0
+-                    ? "Connecting to deploy server..."
+-                    : "Live deploy logs streaming..."}
+-              </div>
++          <div className="flex items-center justify-between pt-4 border-t border-slate-100 mt-2">
++            <div className="flex items-center gap-2 text-[13px] text-slate-500 font-mono truncate max-w-[60%]">
++              <GitBranch className="w-3.5 h-3.5" />
++              <span className="truncate">Deploying from main - {state.projectName}</span>
+             </div>
++            
++            <Link 
++              href="/dashboard"
++              className="inline-flex items-center justify-center h-9 px-4 rounded-lg bg-white border border-slate-200 text-slate-700 text-sm font-medium hover:border-slate-300 hover:bg-slate-50 transition-colors shadow-sm"
++            >
++              Cancel Deployment
++            </Link>
+           </div>
+         </div>
+       </div>
+@@ -449,15 +502,33 @@ function SuccessScreen({ state }: { state: DeployState }) {
+ 
+           <div className="px-6 py-8 text-center border-b border-slate-100 relative overflow-hidden">
+             <div className="absolute inset-x-0 top-0 h-32 bg-gradient-to-b from-emerald-50/60 to-transparent pointer-events-none" />
+-            <div className="relative inline-flex items-center justify-center mb-4">
+-              <div className="absolute inset-0 rounded-full bg-emerald-400/30 blur-xl" />
+-              <div className="relative w-16 h-16 rounded-2xl bg-gradient-to-br from-emerald-400 to-emerald-600 flex items-center justify-center shadow-lg shadow-emerald-200">
+-                <PartyPopper className="w-8 h-8 text-white drop-shadow" />
+-              </div>
+-              <span className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-gradient-to-br from-amber-400 to-orange-500 border-2 border-white shadow-sm" />
++            
++            <h1 className="relative text-2xl font-bold text-slate-900 tracking-tight mb-2 mt-4">Congratulations!</h1>
++            <p className="relative text-sm text-slate-600 mb-8">
++              You just deployed a new project to <span className="font-semibold text-slate-800">your ZenithOS</span>.
++            </p>
++
++            <div className="relative mx-auto w-[300px] sm:w-[500px] aspect-[16/10] bg-slate-100 border border-slate-200 rounded-xl overflow-hidden shadow-sm group">
++               {/* Browser Top Bar */}
++               <div className="absolute top-0 inset-x-0 h-6 bg-slate-100 border-b border-slate-200 flex items-center px-2 gap-1.5 z-10">
++                 <div className="w-2 h-2 rounded-full bg-red-400" />
++                 <div className="w-2 h-2 rounded-full bg-amber-400" />
++                 <div className="w-2 h-2 rounded-full bg-emerald-400" />
++               </div>
++               
++               {/* Iframe wrapped for desktop simulation */}
++               <div className="absolute top-6 inset-x-0 bottom-0 overflow-hidden bg-white">
++                 <div className="w-[600px] h-[375px] sm:w-[1000px] sm:h-[625px] origin-top-left scale-[0.5] pointer-events-none bg-white">
++                   <iframe 
++                     src={fullUrl} 
++                     className="w-full h-full border-none" 
++                     title="Deployment Preview"
++                     loading="lazy"
++                     sandbox="allow-scripts allow-same-origin"
++                   />
++                 </div>
++               </div>
+             </div>
+-            <h1 className="relative text-xl font-bold text-slate-900 tracking-tight">Deployment Successful!</h1>
+-            <p className="relative text-sm text-slate-500 mt-1.5">Your project is now live and ready to share</p>
+           </div>
+ 
+           <div className="px-6 py-5 border-b border-slate-100">
+@@ -496,7 +567,7 @@ function SuccessScreen({ state }: { state: DeployState }) {
+               href="/dashboard"
+               className="flex-1 inline-flex items-center justify-center h-10 px-4 rounded-xl bg-white border border-slate-200 text-slate-700 text-xs font-semibold hover:border-slate-300 hover:bg-slate-50 active:bg-slate-100 transition-colors shadow-sm"
+             >
+-              Back to Projects
++              Back
+             </Link>
+           </div>
+         </div>
+@@ -577,10 +648,10 @@ function FailedScreen({ state, retryPath }: { state: DeployState; retryPath: str
+             </button>
+             {logsOpen && (
+               <div className="px-6 pb-5">
+-                <div className="bg-[#0b1020] border border-slate-800 rounded-xl overflow-hidden">
+-                  <div className="flex items-center gap-2 px-3 py-2 border-b border-slate-800/80 bg-[#0a0f1c]">
+-                    <TerminalIcon className="w-3 h-3 text-slate-400" />
+-                    <span className="text-[11px] font-mono text-slate-400">deploy log</span>
++                <div className="bg-white border border-slate-200 rounded-xl overflow-hidden shadow-sm">
++                  <div className="flex items-center gap-2 px-3 py-2 border-b border-slate-100 bg-slate-50">
++                    <TerminalIcon className="w-3 h-3 text-slate-500" />
++                    <span className="text-[11px] font-mono text-slate-500">deploy log</span>
+                   </div>
+                   <div ref={terminalRef} className="p-3 max-h-64 overflow-y-auto font-mono text-[12px] leading-relaxed space-y-0.5">
+                     {state.logs.map((line, i) => (
+@@ -588,12 +659,12 @@ function FailedScreen({ state, retryPath }: { state: DeployState; retryPath: str
+                         key={i}
+                         className={
+                           /error|fail|exit code [^0]/i.test(line)
+-                            ? "text-red-400"
++                            ? "text-red-500 font-medium"
+                             : /warn/i.test(line)
+-                              ? "text-amber-400"
++                              ? "text-amber-500"
+                               : /success|complete|live at/i.test(line)
+-                                ? "text-emerald-400"
+-                                : "text-slate-300"
++                                ? "text-emerald-500"
++                                : "text-slate-600"
+                         }
+                       >
+                         {line || "\u00A0"}
+@@ -616,7 +687,7 @@ function FailedScreen({ state, retryPath }: { state: DeployState; retryPath: str
+               href="/dashboard"
+               className="flex-1 inline-flex items-center justify-center h-10 px-4 rounded-xl bg-white border border-slate-200 text-slate-700 text-xs font-semibold hover:border-slate-300 hover:bg-slate-50 transition-colors shadow-sm"
+             >
+-              Back to Projects
++              Back
+             </Link>
+           </div>
+         </div>
+@@ -632,7 +703,7 @@ function PageShell({ children }: { children: React.ReactNode }) {
+     <div className="min-h-screen bg-slate-50">
+       <div className="border-b border-slate-200 bg-white px-6 py-3 flex items-center gap-3">
+         <Link href="/dashboard" className="inline-flex items-center gap-1.5 text-sm text-slate-500 hover:text-slate-800 transition-colors">
+-          <ArrowLeft className="w-4 h-4" /> Projects
++          <ArrowLeft className="w-4 h-4" /> Back
+         </Link>
+         <ChevronRight className="w-3.5 h-3.5 text-slate-300" />
+         <span className="text-sm font-medium text-slate-800">Deploying</span>
+@@ -714,27 +785,27 @@ function Terminal({
+   terminalRef: React.RefObject<HTMLDivElement>;
+ }) {
+   return (
+-    <div className="bg-[#0b1020] border border-slate-800 rounded-2xl overflow-hidden flex flex-col h-full min-h-0 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
+-      <div className="flex items-center gap-2 px-4 py-2.5 border-b border-slate-800/80 bg-[#0a0f1c] shrink-0">
++    <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden flex flex-col h-full min-h-0 shadow-sm">
++      <div className="flex items-center gap-2 px-4 py-2.5 border-b border-slate-100 bg-slate-50 shrink-0">
+         <div className="flex gap-1.5">
+-          <span className="w-3 h-3 rounded-full bg-red-500/70" />
+-          <span className="w-3 h-3 rounded-full bg-amber-400/70" />
+-          <span className="w-3 h-3 rounded-full bg-emerald-500/70" />
++          <span className="w-3 h-3 rounded-full bg-red-400" />
++          <span className="w-3 h-3 rounded-full bg-amber-400" />
++          <span className="w-3 h-3 rounded-full bg-emerald-400" />
+         </div>
+         <TerminalIcon className="w-3.5 h-3.5 text-slate-500 ml-1" />
+         <span className="text-[11px] font-mono text-slate-500">deploy log</span>
+         {live && (
+-          <span className="ml-auto flex items-center gap-1.5 text-[10px] font-mono text-emerald-400">
+-            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" /> LIVE
++          <span className="ml-auto flex items-center gap-1.5 text-[10px] font-mono text-emerald-600">
++            <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" /> LIVE
+           </span>
+         )}
+       </div>
+       <div
+         ref={terminalRef}
+-        className="flex-1 min-h-0 overflow-y-auto p-4 font-mono text-[12.5px] leading-relaxed space-y-0.5"
++        className="flex-1 min-h-0 overflow-y-auto p-4 font-mono text-[12.5px] leading-relaxed space-y-0.5 bg-white"
+       >
+         {logs.length === 0 ? (
+-          <div className="flex items-center gap-2 text-slate-600">
++          <div className="flex items-center gap-2 text-slate-400">
+             <Loader2 className="w-3.5 h-3.5 animate-spin" />
+             <span>Connecting to deploy server...</span>
+           </div>
+@@ -744,16 +815,16 @@ function Terminal({
+               key={i}
+               className={
+                 /error|fail|exit code [^0]/i.test(line)
+-                  ? "text-red-400"
++                  ? "text-red-500 font-medium"
+                   : /warn/i.test(line)
+-                    ? "text-amber-400"
++                    ? "text-amber-500"
+                     : /success|complete|live at|framework detected/i.test(line)
+-                      ? "text-emerald-400"
++                      ? "text-emerald-500"
+                       : line.startsWith("→")
+-                        ? "text-sky-400"
++                        ? "text-sky-500"
+                         : line.startsWith("=")
+-                          ? "text-violet-400 font-semibold"
+-                          : "text-slate-300"
++                          ? "text-violet-500 font-semibold"
++                          : "text-slate-600"
+               }
+             >
+               {line || "\u00A0"}
+diff --git a/artifacts/zenith-os/src/pages/import.tsx b/artifacts/zenith-os/src/pages/import.tsx
+index 9f7b8e1..06bb0a5 100644
+--- a/artifacts/zenith-os/src/pages/import.tsx
++++ b/artifacts/zenith-os/src/pages/import.tsx
+@@ -19,6 +19,7 @@ import {
+   RefreshCw,
+ } from "lucide-react";
+ import { AppShell } from "@/components/AppShell";
++import { getAuthToken } from "@/lib/projects";
+ 
+ export default function Import() {
+   const [, navigate] = useLocation();
+@@ -53,7 +54,10 @@ export default function Import() {
+ 
+   // GitHub Connection Status Verification
+   const fetchStatus = () => {
+-    fetch("/api-proxy/api/auth/github/status")
++    const token = getAuthToken();
++    fetch("/api-proxy/api/auth/github/status", {
++      headers: token ? { Authorization: `Bearer ${token}` } : {}
++    })
+       .then((res) => res.json())
+       .then((data) => {
+         setGitConnected(data.connected);
+@@ -66,7 +70,10 @@ export default function Import() {
+ 
+   const fetchRepos = () => {
+     setLoadingRepos(true);
+-    fetch("/api-proxy/api/github/repos")
++    const token = getAuthToken();
++    fetch("/api-proxy/api/github/repos", {
++      headers: token ? { Authorization: `Bearer ${token}` } : {}
++    })
+       .then((res) => {
+         if (!res.ok) throw new Error("Failed to load");
+         return res.json();
+@@ -102,8 +109,9 @@ export default function Import() {
+     const height = 700;
+     const left = window.screen.width / 2 - width / 2;
+     const top = window.screen.height / 2 - height / 2;
++    const token = getAuthToken();
+     window.open(
+-      "/api-proxy/api/auth/github",
++      `/api-proxy/api/auth/github${token ? `?token=${encodeURIComponent(token)}` : ''}`,
+       "GitHub Authorization",
+       `width=${width},height=${height},top=${top},left=${left}`
+     );
+@@ -111,7 +119,11 @@ export default function Import() {
+ 
+   const handleDisconnect = () => {
+     if (confirm("Are you sure you want to disconnect GitHub?")) {
+-      fetch("/api-proxy/api/auth/github/disconnect", { method: "POST" })
++      const token = getAuthToken();
++      fetch("/api-proxy/api/auth/github/disconnect", { 
++        method: "POST",
++        headers: token ? { Authorization: `Bearer ${token}` } : {}
++      })
+         .then(() => {
+           setGitConnected(false);
+           setRepos([]);
+diff --git a/artifacts/zenith-os/src/pages/infrastructure.tsx b/artifacts/zenith-os/src/pages/infrastructure.tsx
+index 7f78b39..3cdcbc2 100644
+--- a/artifacts/zenith-os/src/pages/infrastructure.tsx
++++ b/artifacts/zenith-os/src/pages/infrastructure.tsx
+@@ -13,7 +13,7 @@ import {
+   Zap,
+ } from "lucide-react";
+ import { AppShell } from "@/components/AppShell";
+-import { fetchProjectsFromServer, type Project } from "@/lib/projects";
++import { fetchProjectsFromServer, getAuthToken, type Project } from "@/lib/projects";
+ 
+ const STATS_URL = "/api-proxy/stats";
+ 
+@@ -157,7 +157,15 @@ export default function InfrastructurePage() {
+ 
+   const fetchStats = useCallback(async () => {
+     try {
+-      const res = await fetch(STATS_URL, { signal: AbortSignal.timeout(15000) });
++      const token = getAuthToken();
++      const workspaceId = localStorage.getItem("cloudrik-workspace");
++      let url = STATS_URL;
++      if (workspaceId) url += `?workspaceId=${workspaceId}`;
++
++      const res = await fetch(url, { 
++        signal: AbortSignal.timeout(15000),
++        headers: token ? { Authorization: `Bearer ${token}` } : {}
++      });
+       if (!res.ok) return;
+       const data = await res.json() as ContainerStat[];
+       setStats(data);
+diff --git a/artifacts/zenith-os/src/pages/logs.tsx b/artifacts/zenith-os/src/pages/logs.tsx
+index 1ebf95b..90ac78f 100644
+--- a/artifacts/zenith-os/src/pages/logs.tsx
++++ b/artifacts/zenith-os/src/pages/logs.tsx
+@@ -13,7 +13,7 @@ import {
+   WifiOff,
+ } from "lucide-react";
+ import { AppShell } from "@/components/AppShell";
+-import { fetchProjectsFromServer, type Project } from "@/lib/projects";
++import { fetchProjectsFromServer, getAuthToken, type Project } from "@/lib/projects";
+ 
+ const LOGS_URL = "/api-proxy/projects";
+ const STREAM_URL = "/api-proxy/projects";
+@@ -31,15 +31,21 @@ function makeLine(text: string): LogLine {
+ }
+ 
+ const LINE_COLORS: Record<string, string> = {
+-  error: "text-red-400",
+-  warn:  "text-amber-400",
+-  info:  "text-emerald-400",
+-  plain: "text-slate-300",
++  error: "text-red-500 font-medium",
++  warn:  "text-amber-500",
++  info:  "text-emerald-500",
++  plain: "text-slate-700",
+ };
+ 
+ async function fetchLogs(projectName: string, lines = 200): Promise<string[]> {
+-  const res = await fetch(`${LOGS_URL}/${encodeURIComponent(projectName)}/logs?lines=${lines}`, {
++  const token = getAuthToken();
++  const workspaceId = localStorage.getItem("cloudrik-workspace");
++  let url = `${LOGS_URL}/${encodeURIComponent(projectName)}/logs?lines=${lines}`;
++  if (workspaceId) url += `&workspaceId=${workspaceId}`;
++
++  const res = await fetch(url, {
+     signal: AbortSignal.timeout(8000),
++    headers: token ? { "Authorization": `Bearer ${token}` } : {}
+   });
+   if (!res.ok) return [];
+   const data = await res.json() as { logs: string[] };
+@@ -103,7 +109,11 @@ export default function LogsPage() {
+     setConnected(false);
+     setStreaming(true);
+ 
+-    const url = `${STREAM_URL}/${encodeURIComponent(selected)}/logs/stream?tail=80`;
++    const token = getAuthToken();
++    const workspaceId = localStorage.getItem("cloudrik-workspace");
++    let url = `${STREAM_URL}/${encodeURIComponent(selected)}/logs/stream?tail=80&token=${token || ""}`;
++    if (workspaceId) url += `&workspaceId=${workspaceId}`;
++    
+     const es = new EventSource(url);
+     esRef.current = es;
+ 
+@@ -317,45 +327,45 @@ export default function LogsPage() {
+         )}
+ 
+         {/* ── Terminal window ── */}
+-        <div className="flex-1 bg-slate-950 rounded-2xl border border-slate-800 overflow-hidden shadow-2xl flex flex-col min-h-[420px]">
++        <div className="flex-1 bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-sm flex flex-col min-h-[420px]">
+           {/* Title bar */}
+-          <div className="flex items-center gap-2 px-4 py-2.5 border-b border-slate-800 bg-slate-900/60 shrink-0">
+-            <div className="w-3 h-3 rounded-full bg-red-500/70" />
+-            <div className="w-3 h-3 rounded-full bg-yellow-500/70" />
+-            <div className="w-3 h-3 rounded-full bg-green-500/70" />
+-            <span className="ml-2 text-xs font-mono text-slate-400">
++          <div className="flex items-center gap-2 px-4 py-2.5 border-b border-slate-100 bg-slate-50 shrink-0">
++            <div className="w-3 h-3 rounded-full bg-red-400" />
++            <div className="w-3 h-3 rounded-full bg-amber-400" />
++            <div className="w-3 h-3 rounded-full bg-emerald-400" />
++            <span className="ml-2 text-xs font-mono text-slate-500">
+               {selected ? `${selected} — logs` : "select a project"}
+             </span>
+             {streaming && connected && (
+-              <span className="ml-auto inline-flex items-center gap-1 text-[10px] font-mono text-emerald-400">
+-                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping" />
++              <span className="ml-auto inline-flex items-center gap-1 text-[10px] font-mono text-emerald-600">
++                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-ping" />
+                 LIVE
+               </span>
+             )}
+-            {loadingLogs && <Loader2 className="w-3.5 h-3.5 animate-spin text-slate-500 ml-auto" />}
++            {loadingLogs && <Loader2 className="w-3.5 h-3.5 animate-spin text-slate-400 ml-auto" />}
+           </div>
+ 
+           {/* Log content */}
+-          <div className="flex-1 overflow-y-auto p-4 font-mono text-xs leading-relaxed">
++          <div className="flex-1 overflow-y-auto p-4 font-mono text-xs leading-relaxed bg-white">
+             {!selected && (
+-              <div className="flex flex-col items-center justify-center h-full gap-2 text-slate-600">
++              <div className="flex flex-col items-center justify-center h-full gap-2 text-slate-400">
+                 <Terminal className="w-8 h-8 opacity-30" />
+                 <p>Select a project to view logs</p>
+               </div>
+             )}
+             {selected && loadingLogs && lines.length === 0 && (
+-              <div className="flex items-center gap-2 text-slate-500 justify-center h-full">
++              <div className="flex items-center gap-2 text-slate-400 justify-center h-full">
+                 <Loader2 className="w-4 h-4 animate-spin" />
+                 <span>Loading logs…</span>
+               </div>
+             )}
+             {selected && !loadingLogs && lines.length === 0 && !streaming && (
+-              <div className="flex flex-col items-center justify-center h-full gap-2 text-slate-600">
++              <div className="flex flex-col items-center justify-center h-full gap-2 text-slate-500">
+                 <AlertTriangle className="w-6 h-6 opacity-40" />
+                 <p>No logs — container may be idle</p>
+                 <button
+                   onClick={handleToggleLive}
+-                  className="mt-2 inline-flex items-center gap-1.5 h-8 px-3 rounded-lg bg-slate-800 text-white text-xs font-medium hover:bg-slate-700 transition-colors"
++                  className="mt-2 inline-flex items-center gap-1.5 h-8 px-3 rounded-lg bg-slate-100 border border-slate-200 text-slate-700 text-xs font-medium hover:bg-slate-200 transition-colors"
+                 >
+                   <Radio className="w-3 h-3" /> Start Live Stream
+                 </button>
+@@ -363,14 +373,14 @@ export default function LogsPage() {
+             )}
+             {selected && !loadingLogs && lines.length === 0 && streaming && (
+               <div className="flex items-center gap-2 text-slate-500 justify-center h-full">
+-                <Radio className="w-4 h-4 animate-pulse text-emerald-400" />
++                <Radio className="w-4 h-4 animate-pulse text-emerald-500" />
+                 <span>Waiting for new log lines…</span>
+               </div>
+             )}
+ 
+             {lines.map((line, i) => (
+-              <div key={line.id} className={`flex gap-2 ${LINE_COLORS[line.type]} hover:bg-white/5 rounded px-1 -mx-1 py-0.5 group`}>
+-                <span className="text-slate-700 shrink-0 select-none w-8 text-right group-hover:text-slate-500">{i + 1}</span>
++              <div key={line.id} className={`flex gap-2 ${LINE_COLORS[line.type]} hover:bg-slate-50 rounded px-1 -mx-1 py-0.5 group transition-colors`}>
++                <span className="text-slate-300 shrink-0 select-none w-8 text-right group-hover:text-slate-400">{i + 1}</span>
+                 <span className="break-all whitespace-pre-wrap">{line.text}</span>
+               </div>
+             ))}
+diff --git a/artifacts/zenith-os/src/pages/project.tsx b/artifacts/zenith-os/src/pages/project.tsx
+index b39fc05..cff2432 100644
+--- a/artifacts/zenith-os/src/pages/project.tsx
++++ b/artifacts/zenith-os/src/pages/project.tsx
+@@ -33,10 +33,11 @@ import {
+   Radio,
+   WifiOff,
+   Download,
++  Moon,
+ } from "lucide-react";
+-import { getProjects, fetchProjectsFromServer, formatRelativeTime, deleteProjectFromServer, type Project } from "@/lib/projects";
++import { getProjects, fetchProjectsFromServer, formatRelativeTime, deleteProjectFromServer, getAuthToken, type Project } from "@/lib/projects";
+ import { AppShell } from "@/components/AppShell";
+-import { normalizeUrlForDisplay, getWebhookInfo, getEnvVars, saveEnvVars, deleteEnvVar, type WebhookInfo, type EnvVars } from "@/lib/deploy";
++import { normalizeUrlForDisplay, getWebhookInfo, getWebhookPingStatus, getEnvVars, saveEnvVars, deleteEnvVar, type WebhookInfo, type EnvVars } from "@/lib/deploy";
+ 
+ // ─────────────────────────────────────────────────────────────────────────────
+ // Tab configuration
+@@ -102,16 +103,44 @@ export default function ProjectDetail() {
+   const [activeTab, setActiveTab] = useState<TabId>("overview");
+   const [loading, setLoading] = useState(true);
+   const [actionLoading, setActionLoading] = useState<"start" | "stop" | "restart" | null>(null);
++  const [currentUserRole, setCurrentUserRole] = useState("Owner");
++
++  useEffect(() => {
++    async function loadRole() {
++      try {
++        const workspaceId = localStorage.getItem("cloudrik-workspace");
++        const token = getAuthToken();
++        let url = "/api-proxy/api/auth/me";
++        if (workspaceId) url += `?workspaceId=${workspaceId}`;
++        const res = await fetch(url, {
++          headers: token ? { Authorization: `Bearer ${token}` } : {}
++        });
++        if (res.ok) {
++          const data = await res.json();
++          setCurrentUserRole(data.workspaceRole || "Owner");
++        }
++      } catch (err) {}
++    }
++    loadRole();
++  }, []);
+ 
+   const handleAction = async (action: "start" | "stop" | "restart") => {
+     setActionLoading(action);
+     try {
+-      const res = await fetch(`/api-proxy/projects/${encodeURIComponent(projectName)}/${action}`, {
+-        method: "POST"
++      const token = getAuthToken();
++      const workspaceId = localStorage.getItem("cloudrik-workspace");
++      let url = `/api-proxy/projects/${encodeURIComponent(projectName)}/${action}`;
++      if (workspaceId) url += `?workspaceId=${workspaceId}`;
++
++      const res = await fetch(url, {
++        method: "POST",
++        headers: token ? { "Authorization": `Bearer ${token}` } : {},
+       });
+       if (res.ok) {
+         const data = await res.json() as { status: string };
+-        const mappedStatus = data.status === "running" ? "live" : data.status === "stopped" ? "stopped" : "failed";
++        const mappedStatus = data.status === "running" || data.status === "already_running" ? "live" 
++          : data.status === "stopped" ? "stopped" 
++          : "failed";
+ 
+         // Update local state
+         setProject(prev => prev ? { ...prev, status: mappedStatus } : null);
+@@ -132,29 +161,28 @@ export default function ProjectDetail() {
+   };
+ 
+   useEffect(() => {
+-    // Try localStorage first (instant), then fallback to server fetch
++    // Try localStorage first for instant load
+     const fromCache = getProjects().find((p) => p.name === projectName) ?? null;
+-    setProject(fromCache);
+-
+     if (fromCache) {
++      setProject(fromCache);
+       setLoading(false);
+-    } else {
+-      fetchProjectsFromServer().then((data) => {
+-        const found = data.find((p) => p.name === projectName) ?? null;
+-        setProject(found);
+-        setLoading(false);
+-        // Also persist to localStorage so next visit is instant
+-        if (found) {
+-          const saved = getProjects();
+-          if (!saved.find((p) => p.name === projectName)) {
+-            localStorage.setItem("zenith.projects", JSON.stringify([found, ...saved]));
+-          }
+-        }
+-      }).catch(() => {
+-        setLoading(false);
+-      });
+     }
+ 
++    // Always fetch from server in background to get the fresh database values
++    fetchProjectsFromServer().then((data) => {
++      const found = data.find((p) => p.name === projectName) ?? null;
++      if (found) {
++        setProject(found);
++        // Persist fresh data to local storage cache
++        const saved = getProjects();
++        const filtered = saved.filter((p) => p.name !== projectName);
++        localStorage.setItem("zenith.projects", JSON.stringify([found, ...filtered]));
++      }
++      setLoading(false);
++    }).catch(() => {
++      setLoading(false);
++    });
++
+     const refresh = () => {
+       const found = getProjects().find((p) => p.name === projectName) ?? null;
+       if (found) setProject(found);
+@@ -252,7 +280,7 @@ export default function ProjectDetail() {
+             {/* Right side action buttons — horizontal */}
+             <div className="flex items-center gap-2 shrink-0">
+               {/* Lifecycle controls */}
+-              {project.status === "live" || project.status === "running" ? (
++              {currentUserRole !== "Viewer" && (project.status === "live" || project.status === "running" ? (
+                 <>
+                   <button
+                     disabled={actionLoading !== null}
+@@ -288,7 +316,7 @@ export default function ProjectDetail() {
+                   )}
+                   Start App
+                 </button>
+-              ) : null}
++              ) : null)}
+ 
+               <a
+                 href={normalizeUrlForDisplay(project.domain)}
+@@ -348,7 +376,7 @@ export default function ProjectDetail() {
+             {activeTab === "deployments" && <DeploymentsTab project={project} />}
+             {activeTab === "logs" && <LogsTab project={project} />}
+             {activeTab === "domains" && <DomainsTab project={project} />}
+-            {activeTab === "settings" && <SettingsTab project={project} />}
++            {activeTab === "settings" && <SettingsTab project={project} currentUserRole={currentUserRole} />}
+           </motion.div>
+         </AnimatePresence>
+       </div>
+@@ -372,11 +400,23 @@ function OverviewTab({ project, setActiveTab }: { project: Project; setActiveTab
+   useEffect(() => {
+     let active = true;
+     const fetchStats = () => {
+-      fetch(`/api-proxy/api/projects/${encodeURIComponent(project.name)}/stats`)
+-        .then(res => res.json())
++      const token = getAuthToken();
++      const workspaceId = localStorage.getItem("cloudrik-workspace");
++      let url = `/api-proxy/api/projects/${encodeURIComponent(project.name)}/stats`;
++      if (workspaceId) url += `?workspaceId=${workspaceId}`;
++
++      fetch(url, {
++        headers: token ? { "Authorization": `Bearer ${token}` } : {}
++      })
++        .then(res => {
++          if (!res.ok) throw new Error("Server error fetching stats");
++          return res.json();
++        })
+         .then(data => {
+-          if (active) {
++          if (active && data && !data.error) {
+             setStats({ ...data, loading: false });
++          } else if (active) {
++            setStats(s => ({ ...s, loading: false, online: false }));
+           }
+         })
+         .catch(err => {
+@@ -396,8 +436,8 @@ function OverviewTab({ project, setActiveTab }: { project: Project; setActiveTab
+     };
+   }, [project.name]);
+ 
+-  const cpuVal = parseFloat(stats.cpu.replace('%', '')) || 0;
+-  const memVal = parseFloat(stats.memPerc.replace('%', '')) || 0;
++  const cpuVal = (stats.cpu && typeof stats.cpu === "string") ? parseFloat(stats.cpu.replace('%', '')) || 0 : 0;
++  const memVal = (stats.memPerc && typeof stats.memPerc === "string") ? parseFloat(stats.memPerc.replace('%', '')) || 0 : 0;
+ 
+   return (
+     <div className="space-y-6">
+@@ -583,7 +623,7 @@ type DeploymentRow = {
+   commit: string;
+   message: string;
+   branch: string;
+-  status: "live" | "building" | "failed";
++  status: "live" | "building" | "failed" | "stopped";
+   duration: string;
+   ts: number;
+   author: string;
+@@ -721,10 +761,10 @@ type RealLogLine = { id: number; text: string; color: string };
+ 
+ function colorForLine(text: string): string {
+   const l = text.toLowerCase();
+-  if (/error|exception|fatal|crash|panic/.test(l)) return "text-red-400";
+-  if (/warn|warning|deprecated/.test(l)) return "text-amber-400";
+-  if (/info|started|ready|listening|connected|success|running/.test(l)) return "text-emerald-400";
+-  return "text-slate-300";
++  if (/error|exception|fatal|crash|panic/.test(l)) return "text-red-500 font-medium";
++  if (/warn|warning|deprecated/.test(l)) return "text-amber-500";
++  if (/info|started|ready|listening|connected|success|running/.test(l)) return "text-emerald-500";
++  return "text-slate-700";
+ }
+ 
+ function makeRealLine(text: string): RealLogLine {
+@@ -751,8 +791,14 @@ function LogsTab({ project }: { project: Project }) {
+   const fetchSnapshot = useCallback(async () => {
+     setLoading(true);
+     try {
+-      const res = await fetch(`${LOGS_API}/${encodeURIComponent(project.name)}/logs?lines=${lineCount}`, {
++      const token = getAuthToken();
++      const workspaceId = localStorage.getItem("cloudrik-workspace");
++      let url = `${LOGS_API}/${encodeURIComponent(project.name)}/logs?lines=${lineCount}`;
++      if (workspaceId) url += `&workspaceId=${workspaceId}`;
++
++      const res = await fetch(url, {
+         signal: AbortSignal.timeout(8000),
++        headers: token ? { "Authorization": `Bearer ${token}` } : {}
+       });
+       if (!res.ok) return;
+       const data = await res.json() as { logs: string[] };
+@@ -775,9 +821,12 @@ function LogsTab({ project }: { project: Project }) {
+     setConnected(false);
+     setStreaming(true);
+ 
+-    const es = new EventSource(
+-      `${LOGS_API}/${encodeURIComponent(project.name)}/logs/stream?tail=80`
+-    );
++    const token = getAuthToken();
++    const workspaceId = localStorage.getItem("cloudrik-workspace");
++    let streamUrl = `${LOGS_API}/${encodeURIComponent(project.name)}/logs/stream?tail=80&token=${token || ""}`;
++    if (workspaceId) streamUrl += `&workspaceId=${workspaceId}`;
++
++    const es = new EventSource(streamUrl);
+     esRef.current = es;
+     es.onopen = () => setConnected(true);
+     es.onmessage = (e) => {
+@@ -928,41 +977,41 @@ function LogsTab({ project }: { project: Project }) {
+         </div>
+ 
+         {/* Terminal */}
+-        <div className="bg-slate-950 rounded-xl overflow-hidden border border-slate-800">
+-          <div className="flex items-center gap-1.5 px-3 py-2 border-b border-slate-800 bg-slate-900 shrink-0">
+-            <span className="w-2.5 h-2.5 rounded-full bg-red-500/80" />
+-            <span className="w-2.5 h-2.5 rounded-full bg-amber-400/80" />
+-            <span className="w-2.5 h-2.5 rounded-full bg-emerald-500/80" />
+-            <span className="ml-2 text-[11px] font-mono text-slate-400">{project.name} — logs</span>
++        <div className="bg-white rounded-xl overflow-hidden border border-slate-200 shadow-sm">
++          <div className="flex items-center gap-1.5 px-3 py-2 border-b border-slate-100 bg-slate-50 shrink-0">
++            <span className="w-2.5 h-2.5 rounded-full bg-red-400" />
++            <span className="w-2.5 h-2.5 rounded-full bg-amber-400" />
++            <span className="w-2.5 h-2.5 rounded-full bg-emerald-400" />
++            <span className="ml-2 text-[11px] font-mono text-slate-500">{project.name} — logs</span>
+             {streaming && connected && (
+-              <span className="ml-auto inline-flex items-center gap-1 text-[10px] font-mono text-emerald-400">
+-                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping" />LIVE
++              <span className="ml-auto inline-flex items-center gap-1 text-[10px] font-mono text-emerald-600">
++                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-ping" />LIVE
+               </span>
+             )}
+-            {loading && <Loader2 className="w-3.5 h-3.5 animate-spin text-slate-500 ml-auto" />}
++            {loading && <Loader2 className="w-3.5 h-3.5 animate-spin text-slate-400 ml-auto" />}
+           </div>
+ 
+           <div className="font-mono text-xs leading-relaxed p-4 h-[420px] overflow-y-auto">
+             {/* Loading state */}
+             {loading && filtered.length === 0 && (
+-              <div className="flex items-center gap-2 text-slate-500 justify-center h-full">
++              <div className="flex items-center gap-2 text-slate-400 justify-center h-full">
+                 <Loader2 className="w-4 h-4 animate-spin" /> Loading logs…
+               </div>
+             )}
+             {/* Empty + streaming — waiting */}
+             {!loading && filtered.length === 0 && streaming && (
+               <div className="flex items-center gap-2 text-slate-500 justify-center h-full">
+-                <Radio className="w-4 h-4 animate-pulse text-emerald-400" /> Waiting for new log lines…
++                <Radio className="w-4 h-4 animate-pulse text-emerald-500" /> Waiting for new log lines…
+               </div>
+             )}
+             {/* Empty + not streaming */}
+             {!loading && filtered.length === 0 && !streaming && (
+-              <div className="flex flex-col items-center justify-center h-full gap-2 text-slate-600">
++              <div className="flex flex-col items-center justify-center h-full gap-2 text-slate-500">
+                 <AlertTriangle className="w-6 h-6 opacity-30" />
+                 <p>No logs — container may be idle or filter matches nothing</p>
+                 <button
+                   onClick={handleToggleLive}
+-                  className="mt-1 inline-flex items-center gap-1.5 h-8 px-3 rounded-lg bg-slate-800 text-white text-xs font-medium hover:bg-slate-700 transition-colors"
++                  className="mt-1 inline-flex items-center gap-1.5 h-8 px-3 rounded-lg bg-slate-100 text-slate-700 border border-slate-200 text-xs font-medium hover:bg-slate-200 transition-colors"
+                 >
+                   <Radio className="w-3 h-3" /> Start Live Stream
+                 </button>
+@@ -970,8 +1019,8 @@ function LogsTab({ project }: { project: Project }) {
+             )}
+ 
+             {filtered.map((line, i) => (
+-              <div key={line.id} className={`flex gap-2 ${line.color} hover:bg-white/5 rounded px-1 -mx-1 py-0.5 group`}>
+-                <span className="text-slate-700 shrink-0 select-none w-7 text-right group-hover:text-slate-500">{i + 1}</span>
++              <div key={line.id} className={`flex gap-2 ${line.color} hover:bg-slate-50 rounded px-1 -mx-1 py-0.5 group transition-colors`}>
++                <span className="text-slate-300 shrink-0 select-none w-7 text-right group-hover:text-slate-400">{i + 1}</span>
+                 <span className="break-all whitespace-pre-wrap">{line.text}</span>
+               </div>
+             ))}
+@@ -1244,7 +1293,7 @@ function DomainsTab({ project }: { project: Project }) {
+ // ─────────────────────────────────────────────────────────────────────────────
+ // SETTINGS TAB
+ // ─────────────────────────────────────────────────────────────────────────────
+-function SettingsTab({ project }: { project: Project }) {
++function SettingsTab({ project, currentUserRole }: { project: Project, currentUserRole: string }) {
+   return (
+     <div className="space-y-6">
+       <Card title="General" icon={SettingsIcon}>
+@@ -1268,26 +1317,28 @@ function SettingsTab({ project }: { project: Project }) {
+         </div>
+       </Card>
+ 
+-      <EnvVarsCard project={project} />
++      <EnvVarsCard project={project} currentUserRole={currentUserRole} />
+ 
+-      <WebhookBannerCard project={project} />
++      <WebhookBannerCard project={project} currentUserRole={currentUserRole} />
+ 
+-      <Card title="Danger Zone" icon={AlertTriangle}>
+-        <div className="flex items-center justify-between p-4 rounded-lg border border-red-200 bg-red-50/50">
+-          <div>
+-            <h3 className="text-sm font-semibold text-slate-900 mb-0.5">Delete this project</h3>
+-            <p className="text-xs text-slate-500">
+-              Open a confirmation page before permanently removing <span className="font-mono">{project.name}</span>.
+-            </p>
++      {currentUserRole !== "Viewer" && (
++        <Card title="Danger Zone" icon={AlertTriangle}>
++          <div className="flex items-center justify-between p-4 rounded-lg border border-red-200 bg-red-50/50">
++            <div>
++              <h3 className="text-sm font-semibold text-slate-900 mb-0.5">Delete this project</h3>
++              <p className="text-xs text-slate-500">
++                Open a confirmation page before permanently removing <span className="font-mono">{project.name}</span>.
++              </p>
++            </div>
++            <Link
++              href={`/project/${encodeURIComponent(project.name)}/delete`}
++              className="h-9 px-4 rounded-lg bg-white border border-red-200 text-red-600 text-sm font-medium hover:bg-red-50 transition-colors inline-flex items-center"
++            >
++              Delete Project
++            </Link>
+           </div>
+-          <Link
+-            href={`/project/${encodeURIComponent(project.name)}/delete`}
+-            className="h-9 px-4 rounded-lg bg-white border border-red-200 text-red-600 text-sm font-medium hover:bg-red-50 transition-colors inline-flex items-center"
+-          >
+-            Delete Project
+-          </Link>
+-        </div>
+-      </Card>
++        </Card>
++      )}
+     </div>
+   );
+ }
+@@ -1481,7 +1532,7 @@ export function ProjectDeleteRoute() {
+ // ─────────────────────────────────────────────────────────────────────────────
+ type EnvRow = { key: string; value: string; hidden: boolean };
+ 
+-function EnvVarsCard({ project }: { project: Project }) {
++function EnvVarsCard({ project, currentUserRole }: { project: Project, currentUserRole: string }) {
+   const [, navigate] = useLocation();
+   const [rows, setRows] = useState<EnvRow[]>([]);
+   const [loading, setLoading] = useState(true);
+@@ -1573,12 +1624,14 @@ function EnvVarsCard({ project }: { project: Project }) {
+       title="Environment Variables"
+       icon={Hash}
+       action={
+-        <button
+-          onClick={() => setAdding(true)}
+-          className="inline-flex items-center gap-1 h-7 px-2.5 rounded-lg border border-slate-200 text-xs font-medium text-slate-600 hover:bg-slate-50 transition-colors"
+-        >
+-          <Plus className="w-3 h-3" /> Add
+-        </button>
++        currentUserRole !== "Viewer" && (
++          <button
++            onClick={() => setAdding(true)}
++            className="inline-flex items-center gap-1 h-7 px-2.5 rounded-lg border border-slate-200 text-xs font-medium text-slate-600 hover:bg-slate-50 transition-colors"
++          >
++            <Plus className="w-3 h-3" /> Add
++          </button>
++        )
+       }
+     >
+       <div className="space-y-3">
+@@ -1602,7 +1655,8 @@ function EnvVarsCard({ project }: { project: Project }) {
+                 <input
+                   value={row.key}
+                   onChange={(e) => updateRow(i, "key", e.target.value)}
+-                  className="w-36 shrink-0 h-8 px-2 rounded-lg border border-slate-200 bg-slate-50 text-xs font-mono text-slate-800 focus:outline-none focus:ring-2 focus:ring-sky-400/40 focus:border-sky-300"
++                  disabled={currentUserRole === "Viewer"}
++                  className="w-36 shrink-0 h-8 px-2 rounded-lg border border-slate-200 bg-slate-50 text-xs font-mono text-slate-800 focus:outline-none focus:ring-2 focus:ring-sky-400/40 focus:border-sky-300 disabled:opacity-60"
+                   placeholder="KEY"
+                 />
+                 <span className="text-slate-300 text-xs">=</span>
+@@ -1610,8 +1664,8 @@ function EnvVarsCard({ project }: { project: Project }) {
+                   <input
+                     value={row.hidden ? "•".repeat(Math.min(row.value.length, 24)) : row.value}
+                     onChange={(e) => !row.hidden && updateRow(i, "value", e.target.value)}
+-                    readOnly={row.hidden}
+-                    className="w-full h-8 px-2 pr-8 rounded-lg border border-slate-200 bg-slate-50 text-xs font-mono text-slate-800 focus:outline-none focus:ring-2 focus:ring-sky-400/40 focus:border-sky-300"
++                    readOnly={row.hidden || currentUserRole === "Viewer"}
++                    className="w-full h-8 px-2 pr-8 rounded-lg border border-slate-200 bg-slate-50 text-xs font-mono text-slate-800 focus:outline-none focus:ring-2 focus:ring-sky-400/40 focus:border-sky-300 disabled:opacity-60"
+                     placeholder="value"
+                   />
+                   <button
+@@ -1621,12 +1675,14 @@ function EnvVarsCard({ project }: { project: Project }) {
+                     {row.hidden ? <Eye className="w-3 h-3" /> : <EyeOff className="w-3 h-3" />}
+                   </button>
+                 </div>
+-                <button
+-                  onClick={() => handleDelete(row.key)}
+-                  className="opacity-0 group-hover:opacity-100 w-7 h-7 rounded-lg flex items-center justify-center text-red-400 hover:bg-red-50 hover:text-red-600 transition-all"
+-                >
+-                  <Trash2 className="w-3.5 h-3.5" />
+-                </button>
++                {currentUserRole !== "Viewer" && (
++                  <button
++                    onClick={() => handleDelete(row.key)}
++                    className="opacity-0 group-hover:opacity-100 w-7 h-7 rounded-lg flex items-center justify-center text-red-400 hover:bg-red-50 hover:text-red-600 transition-all"
++                  >
++                    <Trash2 className="w-3.5 h-3.5" />
++                  </button>
++                )}
+               </div>
+             ))}
+           </div>
+@@ -1638,12 +1694,14 @@ function EnvVarsCard({ project }: { project: Project }) {
+               <Hash className="w-4 h-4 text-slate-400" />
+             </div>
+             <p className="text-xs text-slate-500">No environment variables yet.</p>
+-            <button
+-              onClick={() => setAdding(true)}
+-              className="inline-flex items-center gap-1.5 h-8 px-3 rounded-lg bg-slate-900 text-white text-xs font-medium hover:bg-slate-800 transition-colors"
+-            >
+-              <Plus className="w-3 h-3" /> Add First Variable
+-            </button>
++            {currentUserRole !== "Viewer" && (
++              <button
++                onClick={() => setAdding(true)}
++                className="inline-flex items-center gap-1.5 h-8 px-3 rounded-lg bg-slate-900 text-white text-xs font-medium hover:bg-slate-800 transition-colors"
++              >
++                <Plus className="w-3 h-3" /> Add First Variable
++              </button>
++            )}
+           </div>
+         )}
+ 
+@@ -1692,7 +1750,7 @@ function EnvVarsCard({ project }: { project: Project }) {
+         {error && <p className="text-xs text-red-500">{error}</p>}
+ 
+         {/* Save / Redeploy buttons */}
+-        {(rows.length > 0 || adding) && !loading && (
++        {(rows.length > 0 || adding) && !loading && currentUserRole !== "Viewer" && (
+           <div className="flex items-center justify-between pt-1 gap-2 flex-wrap">
+             <p className="text-xs text-slate-400">{rows.length} variable{rows.length !== 1 ? "s" : ""} total</p>
+             <div className="flex items-center gap-2">
+@@ -1729,30 +1787,104 @@ function EnvVarsCard({ project }: { project: Project }) {
+ }
+ 
+ // ─────────────────────────────────────────────────────────────────────────────
+-// WEBHOOK BANNER CARD — links to dedicated webhook setup page
++// WEBHOOK BANNER CARD — shows real connection status & links to /webhooks page
+ // ─────────────────────────────────────────────────────────────────────────────
+-function WebhookBannerCard({ project }: { project: Project }) {
++function WebhookBannerCard({ project, currentUserRole }: { project: Project; currentUserRole: string }) {
++  const [status, setStatus] = useState<"loading" | "unconfigured" | "pending" | "verified">("loading");
++
++  useEffect(() => {
++    let active = true;
++    async function checkStatus() {
++      try {
++        setStatus("loading");
++        const token = getAuthToken();
++        const workspaceId = localStorage.getItem("cloudrik-workspace");
++        let url = "/api-proxy/api/webhooks";
++        if (workspaceId) url += `?workspaceId=${workspaceId}`;
++        
++        const wRes = await fetch(url, {
++          headers: token ? { Authorization: `Bearer ${token}` } : {}
++        });
++        
++        if (!wRes.ok) {
++          if (active) setStatus("unconfigured");
++          return;
++        }
++        
++        const activeIds: string[] = await wRes.json();
++        const hasWebhook = activeIds.includes(project.name);
++        
++        if (!hasWebhook) {
++          if (active) setStatus("unconfigured");
++          return;
++        }
++        
++        const pingStatus = await getWebhookPingStatus(project.name);
++        if (active) {
++          if (pingStatus.verified) {
++            setStatus("verified");
++          } else {
++            setStatus("pending");
++          }
++        }
++      } catch (err) {
++        if (active) setStatus("unconfigured");
++      }
++    }
++    checkStatus();
++    return () => {
++      active = false;
++    };
++  }, [project.name]);
++
+   return (
+-    <Link href={`/project/${encodeURIComponent(project.name)}/webhook`}>
+-      <div className="group flex items-center gap-4 bg-white border border-slate-200 rounded-2xl px-5 py-4 hover:border-slate-300 hover:shadow-sm transition-all cursor-pointer">
+-        <div className="w-10 h-10 rounded-xl bg-slate-900 flex items-center justify-center shrink-0">
+-          <Webhook className="w-5 h-5 text-white" />
+-        </div>
+-        <div className="flex-1 min-w-0">
+-          <div className="flex items-center gap-2 mb-0.5">
+-            <span className="text-sm font-semibold text-slate-900">GitHub Webhook</span>
+-            <span className="text-[10px] font-medium text-slate-500 bg-slate-100 px-1.5 py-0.5 rounded-full">Auto-deploy on push</span>
+-          </div>
+-          <p className="text-xs text-slate-500">
+-            Connect GitHub → every <code className="font-mono bg-slate-100 px-1 rounded">git push</code> auto-deploys this project
+-          </p>
+-        </div>
+-        <div className="flex items-center gap-1.5 shrink-0">
+-          <span className="text-xs font-medium text-slate-600 group-hover:text-slate-900 transition-colors">Setup</span>
+-          <ChevronRight className="w-4 h-4 text-slate-400 group-hover:text-slate-700 group-hover:translate-x-0.5 transition-all" />
++    <div className="bg-white border border-slate-200 rounded-2xl px-5 py-4 flex items-center gap-4">
++      <div className="w-10 h-10 rounded-xl bg-slate-900 flex items-center justify-center shrink-0">
++        <Webhook className="w-5 h-5 text-white" />
++      </div>
++      <div className="flex-1 min-w-0">
++        <div className="flex items-center gap-2 mb-0.5 flex-wrap">
++          <span className="text-sm font-semibold text-slate-900">GitHub Webhook</span>
++          <span className="text-[10px] font-medium text-slate-500 bg-slate-100 px-1.5 py-0.5 rounded-full">Auto-deploy on push</span>
++          
++          {status === "loading" && (
++            <span className="inline-flex items-center gap-1 text-[10px] text-slate-400">
++              <Loader2 className="w-3 h-3 animate-spin" /> Checking…
++            </span>
++          )}
++          {status === "verified" && (
++            <span className="inline-flex items-center gap-1.5 text-[10px] font-semibold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-full">
++              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" /> Connected
++            </span>
++          )}
++          {status === "pending" && (
++            <span className="inline-flex items-center gap-1.5 text-[10px] font-semibold text-amber-700 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded-full">
++              <span className="w-1.5 h-1.5 rounded-full bg-amber-500" /> Pending Setup
++            </span>
++          )}
++          {status === "unconfigured" && (
++            <span className="inline-flex items-center gap-1.5 text-[10px] font-semibold text-slate-550 bg-slate-50 border border-slate-200 px-2 py-0.5 rounded-full">
++              <span className="w-1.5 h-1.5 rounded-full bg-slate-400" /> Not Connected
++            </span>
++          )}
+         </div>
++        <p className="text-xs text-slate-500">
++          {status === "verified" && "Auto-deploy is active — every git push triggers a new build."}
++          {status === "pending" && "Webhook created but awaiting GitHub handshake. Paste Payload URL into repo settings."}
++          {status === "unconfigured" && "Connect GitHub to auto-deploy this project on every git push."}
++          {status === "loading" && "Checking webhook configuration status..."}
++        </p>
+       </div>
+-    </Link>
++      {currentUserRole !== "Viewer" && status !== "loading" && (
++        <Link
++          href={`/webhooks?connect=${encodeURIComponent(project.name)}`}
++          className="shrink-0 inline-flex items-center gap-1.5 h-9 px-4 rounded-xl border border-slate-200 text-slate-700 text-xs font-semibold hover:bg-slate-50 hover:border-slate-300 transition-all"
++        >
++          {status === "unconfigured" ? "Connect" : "Manage"}
++          <ChevronRight className="w-3.5 h-3.5" />
++        </Link>
++      )}
++    </div>
+   );
+ }
+ 
+diff --git a/artifacts/zenith-os/src/pages/sign-in.tsx b/artifacts/zenith-os/src/pages/sign-in.tsx
+index ed4d70d..7c912aa 100644
+--- a/artifacts/zenith-os/src/pages/sign-in.tsx
++++ b/artifacts/zenith-os/src/pages/sign-in.tsx
+@@ -12,39 +12,19 @@ export default function SignIn() {
+   const setAuth = useAuth((state) => state.setAuth);
+ 
+   useEffect(() => {
+-    const handleMessage = async (event: MessageEvent) => {
+-      // Make sure message is from trusted origin in production
+-      if (event.data?.type === 'AUTH_SUCCESS' && event.data.token) {
+-        const token = event.data.token;
+-        try {
+-          const res = await fetch(`${API_URL}/api/auth/me`, {
+-            headers: { Authorization: `Bearer ${token}` }
+-          });
+-          if (res.ok) {
+-            const user = await res.json();
+-            setAuth(user, token);
+-            navigate("/dashboard");
+-          }
+-        } catch (error) {
+-          console.error("Auth fetch error:", error);
+-        }
+-      } else if (event.data?.type === 'AUTH_ERROR') {
+-        console.error("Auth Error:", event.data.error);
+-        alert(`Authentication failed: ${event.data.error}`);
+-      }
+-    };
+-
+-    window.addEventListener("message", handleMessage);
+-    return () => window.removeEventListener("message", handleMessage);
+-  }, [navigate, setAuth]);
+-
+-  const openPopup = (provider: 'google' | 'github') => {
+-    const width = 500;
+-    const height = 600;
+-    const left = window.screenX + (window.outerWidth - width) / 2;
+-    const top = window.screenY + (window.outerHeight - height) / 2;
++    // Check for error in URL parameters if redirected back with failure
++    const params = new URLSearchParams(window.location.search);
++    const error = params.get("error");
++    if (error) {
++      alert(`Authentication failed: ${error}`);
++      // Remove error from URL
++      window.history.replaceState({}, document.title, window.location.pathname);
++    }
++  }, []);
++
++  const handleLogin = (provider: 'google' | 'github') => {
+     const url = provider === 'github' ? `${API_URL}/api/auth/github/user` : `${API_URL}/api/auth/${provider}`;
+-    window.open(url, "OAuth", `width=${width},height=${height},left=${left},top=${top}`);
++    window.location.href = url;
+   };
+ 
+   return (
+@@ -111,7 +91,7 @@ export default function SignIn() {
+               <motion.button
+                 whileHover={{ y: -1 }}
+                 whileTap={{ scale: 0.98 }}
+-                onClick={() => openPopup('google')}
++                onClick={() => handleLogin('google')}
+                 className="group inline-flex items-center justify-center gap-3 h-12 px-5 rounded-lg bg-white text-gray-900 font-semibold text-sm hover:bg-gray-50 transition-all shadow-[0_0_0_1px_rgba(255,255,255,0.1)] hover:shadow-[0_0_25px_rgba(255,255,255,0.18)]"
+               >
+                 <FcGoogle className="w-5 h-5" />
+@@ -121,7 +101,7 @@ export default function SignIn() {
+               <motion.button
+                 whileHover={{ y: -1 }}
+                 whileTap={{ scale: 0.98 }}
+-                onClick={() => openPopup('github')}
++                onClick={() => handleLogin('github')}
+                 className="group inline-flex items-center justify-center gap-3 h-12 px-5 rounded-lg bg-[hsl(var(--muted))]/40 border border-[hsl(var(--border))] text-white font-semibold text-sm hover:border-[hsl(var(--primary))]/50 hover:bg-[hsl(var(--muted))]/60 hover:shadow-[0_0_25px_rgba(0,229,255,0.15)] transition-all"
+               >
+                 <Github className="w-5 h-5" />
+diff --git a/artifacts/zenith-os/src/pages/webhook.tsx b/artifacts/zenith-os/src/pages/webhook.tsx
+index 7643e51..2fbd35c 100644
+--- a/artifacts/zenith-os/src/pages/webhook.tsx
++++ b/artifacts/zenith-os/src/pages/webhook.tsx
+@@ -21,7 +21,7 @@ import {
+ } from "lucide-react";
+ import { getProjects, fetchProjectsFromServer, saveProject, type Project } from "@/lib/projects";
+ import { AppShell } from "@/components/AppShell";
+-import { getWebhookInfo, type WebhookInfo } from "@/lib/deploy";
++import { getWebhookInfo, generateWebhook, type WebhookInfo } from "@/lib/deploy";
+ 
+ // ─────────────────────────────────────────────────────────────────────────────
+ // Animated Demo Visual — loops automatically showing the full webhook flow
+@@ -458,12 +458,30 @@ export default function WebhookPage() {
+     return () => { cancelled = true; };
+   }, [projectName]);
+ 
++  // Load existing webhook info on mount if it exists
++  useEffect(() => {
++    if (!projectName) return;
++    let active = true;
++    async function checkExisting() {
++      try {
++        const data = await getWebhookInfo(projectName);
++        if (active && data) {
++          setInfo(data);
++        }
++      } catch (e) {
++        // Ignore errors as it might just be unconfigured
++      }
++    }
++    checkExisting();
++    return () => { active = false; };
++  }, [projectName]);
++
+   async function load() {
+     if (loading || !projectName) return;
+     setLoading(true);
+     setError(null);
+     try {
+-      const data = await getWebhookInfo(projectName);
++      const data = await generateWebhook(projectName);
+       setInfo(data);
+     } catch {
+       setError("Could not connect to the server. Please try again.");

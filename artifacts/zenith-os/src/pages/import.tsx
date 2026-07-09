@@ -19,6 +19,7 @@ import {
   RefreshCw,
 } from "lucide-react";
 import { AppShell } from "@/components/AppShell";
+import { getAuthToken } from "@/lib/projects";
 
 export default function Import() {
   const [, navigate] = useLocation();
@@ -37,6 +38,7 @@ export default function Import() {
   const [loadingRepos, setLoadingRepos] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [refreshing, setRefreshing] = useState(false);
+  const [disconnectConfirmOpen, setDisconnectConfirmOpen] = useState(false);
 
   const autoName = (() => {
     if (repoUrl) {
@@ -53,7 +55,10 @@ export default function Import() {
 
   // GitHub Connection Status Verification
   const fetchStatus = () => {
-    fetch("/api-proxy/api/auth/github/status")
+    const token = getAuthToken();
+    fetch("/api-proxy/api/auth/github/status", {
+      headers: token ? { Authorization: `Bearer ${token}` } : {}
+    })
       .then((res) => res.json())
       .then((data) => {
         setGitConnected(data.connected);
@@ -66,7 +71,10 @@ export default function Import() {
 
   const fetchRepos = () => {
     setLoadingRepos(true);
-    fetch("/api-proxy/api/github/repos")
+    const token = getAuthToken();
+    fetch("/api-proxy/api/github/repos", {
+      headers: token ? { Authorization: `Bearer ${token}` } : {}
+    })
       .then((res) => {
         if (!res.ok) throw new Error("Failed to load");
         return res.json();
@@ -102,28 +110,34 @@ export default function Import() {
     const height = 700;
     const left = window.screen.width / 2 - width / 2;
     const top = window.screen.height / 2 - height / 2;
+    const token = getAuthToken();
     window.open(
-      "/api-proxy/api/auth/github",
+      `/api-proxy/api/auth/github${token ? `?token=${encodeURIComponent(token)}` : ''}`,
       "GitHub Authorization",
       `width=${width},height=${height},top=${top},left=${left}`
     );
   };
 
   const handleDisconnect = () => {
-    if (confirm("Are you sure you want to disconnect GitHub?")) {
-      fetch("/api-proxy/api/auth/github/disconnect", { method: "POST" })
-        .then(() => {
-          setGitConnected(false);
-          setRepos([]);
-        })
-        .catch(err => console.error(err));
-    }
+    setDisconnectConfirmOpen(true);
   };
 
-  const handleSelectRepo = (url: string) => {
-    setRepoUrl(url);
-    if (zipFile) setZipFile(null);
-    window.scrollTo({ top: 0, behavior: "smooth" });
+  const confirmDisconnect = () => {
+    const token = getAuthToken();
+    fetch("/api-proxy/api/auth/github/disconnect", { 
+      method: "POST",
+      headers: token ? { Authorization: `Bearer ${token}` } : {}
+    })
+      .then(() => {
+        setGitConnected(false);
+        setRepos([]);
+        setDisconnectConfirmOpen(false);
+      })
+      .catch(err => console.error(err));
+  };
+
+  const handleSelectRepo = (url: string, repoName: string) => {
+    navigate(`/deploying?name=${encodeURIComponent(repoName)}&repo=${encodeURIComponent(url.trim())}`);
   };
 
   function startDeploy() {
@@ -458,7 +472,7 @@ export default function Import() {
                   </div>
                   <button
                     onClick={handleDisconnect}
-                    className="text-xs font-bold text-slate-400 hover:text-red-500 transition-colors px-3 py-1.5 rounded-xl hover:bg-red-50"
+                    className="flex items-center justify-center px-6 py-1.5 text-xs font-bold text-white bg-slate-900 hover:bg-slate-800 rounded-xl transition-all shadow-sm active:scale-95"
                   >
                     Disconnect
                   </button>
@@ -528,7 +542,7 @@ export default function Import() {
                           )}
                         </div>
                         <button
-                          onClick={() => handleSelectRepo(repo.html_url)}
+                          onClick={() => handleSelectRepo(repo.html_url, repo.name)}
                           className="px-4 h-9 rounded-xl text-xs font-bold bg-slate-100 hover:bg-slate-900 text-slate-800 hover:text-white transition-all shadow-sm active:scale-95 shrink-0"
                         >
                           Import
@@ -544,6 +558,42 @@ export default function Import() {
         </div>
 
       </div>
+
+      {/* Disconnect Confirmation Modal */}
+      <AnimatePresence>
+        {disconnectConfirmOpen && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-sm">
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95, y: 10 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 10 }}
+              className="bg-white rounded-3xl p-8 shadow-2xl max-w-md w-full border border-slate-100"
+            >
+              <div className="w-12 h-12 rounded-full bg-slate-100 flex items-center justify-center mb-5 border border-slate-200">
+                <X className="w-6 h-6 text-slate-900" />
+              </div>
+              <h3 className="text-xl font-bold text-slate-900 mb-2">Disconnect GitHub?</h3>
+              <p className="text-sm text-slate-500 mb-8 leading-relaxed">
+                Are you sure you want to disconnect your GitHub account? You will lose access to your private repositories.
+              </p>
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={() => setDisconnectConfirmOpen(false)}
+                  className="flex-1 px-4 py-3 rounded-xl text-sm font-bold text-slate-700 bg-slate-100 hover:bg-slate-200 transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={confirmDisconnect}
+                  className="flex-1 px-4 py-3 rounded-xl text-sm font-bold text-white bg-slate-900 hover:bg-slate-800 shadow-md shadow-slate-900/20 transition-colors"
+                >
+                  Disconnect
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
     </AppShell>
   );
 }

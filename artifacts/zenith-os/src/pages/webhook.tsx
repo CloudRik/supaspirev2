@@ -21,7 +21,7 @@ import {
 } from "lucide-react";
 import { getProjects, fetchProjectsFromServer, saveProject, type Project } from "@/lib/projects";
 import { AppShell } from "@/components/AppShell";
-import { getWebhookInfo, type WebhookInfo } from "@/lib/deploy";
+import { getWebhookInfo, generateWebhook, type WebhookInfo } from "@/lib/deploy";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Animated Demo Visual — loops automatically showing the full webhook flow
@@ -94,7 +94,7 @@ const LOG_LINES = [
   { text: "Building project...", type: "info", delay: 2900 },
   { text: "Build complete in 38s", type: "success", delay: 3700 },
   { text: "Container deployed on port 3010", type: "success", delay: 4200 },
-  { text: "✓ Live at http://13.233.87.37:3010", type: "live", delay: 4800 },
+  { text: "✓ Live at http://3.109.177.105:3010", type: "live", delay: 4800 },
 ];
 
 function TerminalBlock({ active, phase }: { active: boolean; phase: number }) {
@@ -458,12 +458,30 @@ export default function WebhookPage() {
     return () => { cancelled = true; };
   }, [projectName]);
 
+  // Load existing webhook info on mount if it exists
+  useEffect(() => {
+    if (!projectName) return;
+    let active = true;
+    async function checkExisting() {
+      try {
+        const data = await getWebhookInfo(projectName);
+        if (active && data) {
+          setInfo(data);
+        }
+      } catch (e) {
+        // Ignore errors as it might just be unconfigured
+      }
+    }
+    checkExisting();
+    return () => { active = false; };
+  }, [projectName]);
+
   async function load() {
     if (loading || !projectName) return;
     setLoading(true);
     setError(null);
     try {
-      const data = await getWebhookInfo(projectName);
+      const data = await generateWebhook(projectName);
       setInfo(data);
     } catch {
       setError("Could not connect to the server. Please try again.");
