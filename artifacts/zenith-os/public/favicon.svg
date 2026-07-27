@@ -1,3 +1,11 @@
-<svg width="180" height="180" viewBox="0 0 180 180" fill="none" xmlns="http://www.w3.org/2000/svg">
-<rect width="180" height="180" rx="36" fill="#FF3C00"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="25 30 48 48" width="400" height="400">
+  <!-- Solid Black Icon For Light Theme Testing -->
+  <g fill="#000000">
+    <!-- Top Slanted Bar -->
+    <polygon points="35,32 65,32 57,44 27,44"/>
+    <!-- Middle Slanted Bar -->
+    <polygon points="41,49 71,49 63,61 33,61"/>
+    <!-- Bottom Right Base Pillar -->
+    <polygon points="61,66 71,66 71,76"/>
+  </g>
 </svg>

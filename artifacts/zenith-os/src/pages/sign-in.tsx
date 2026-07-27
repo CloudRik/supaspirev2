@@ -28,116 +28,95 @@ export default function SignIn() {
   };
 
   return (
-    <div className="min-h-screen w-full bg-[hsl(var(--background))] text-[hsl(var(--foreground))] relative overflow-hidden">
-      {/* Background grid */}
+    <div className="min-h-screen w-full bg-black text-white selection:bg-white/20 relative flex items-center justify-center overflow-hidden">
+      {/* Background grid (subtle) */}
       <div
         className="fixed inset-0 z-0 pointer-events-none opacity-20"
         style={{
           backgroundImage:
-            "linear-gradient(to right, hsl(var(--border)) 1px, transparent 1px), linear-gradient(to bottom, hsl(var(--border)) 1px, transparent 1px)",
+            "linear-gradient(to right, rgba(255,255,255,0.05) 1px, transparent 1px), linear-gradient(to bottom, rgba(255,255,255,0.05) 1px, transparent 1px)",
           backgroundSize: "4rem 4rem",
           maskImage: "radial-gradient(circle at center, black, transparent 80%)",
         }}
       />
 
-      {/* Glowing Orbs */}
-      <div className="fixed top-[-20%] left-[-10%] w-[45%] h-[45%] rounded-full bg-[hsl(var(--secondary))] opacity-10 blur-[120px] pointer-events-none z-0" />
-      <div className="fixed bottom-[-20%] right-[-10%] w-[45%] h-[45%] rounded-full bg-[hsl(var(--primary))] opacity-10 blur-[120px] pointer-events-none z-0" />
-
-      {/* Back to home */}
-      <div className="relative z-10 px-6 py-6 max-w-7xl mx-auto">
-        <Link
-          href="/"
-          className="inline-flex items-center gap-2 text-sm text-[hsl(var(--muted-foreground))] hover:text-white transition-colors"
-        >
-          <ArrowLeft className="w-4 h-4" />
-          <span>Back to home</span>
+      {/* CloudRik Logo - Top Left */}
+      <div className="absolute top-6 left-6 z-20">
+        <Link href="/" className="flex items-center gap-2">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="25 30 48 48" className="w-8 h-8 text-white shrink-0">
+            <g fill="currentColor">
+              <polygon points="35,32 65,32 57,44 27,44"/>
+              <polygon points="41,49 71,49 63,61 33,61"/>
+              <polygon points="61,66 71,66 71,76"/>
+            </g>
+          </svg>
+          <span className="font-bold text-lg tracking-widest text-white whitespace-nowrap">CloudRik</span>
         </Link>
       </div>
 
       {/* Centered card */}
-      <div className="relative z-10 flex items-center justify-center px-4 min-h-[calc(100vh-160px)]">
+      <div className="relative z-10 w-full max-w-[400px] px-4">
         <motion.div
-          initial={{ opacity: 0, y: 24 }}
+          initial={{ opacity: 0, y: 10 }}
           animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.7, ease: [0.16, 1, 0.3, 1] }}
-          className="relative w-full max-w-md"
+          transition={{ duration: 0.5, ease: "easeOut" }}
+          className="w-full bg-[#18181b] border border-white/10 rounded-2xl p-8 sm:p-10 shadow-2xl"
         >
-          {/* Glow halo */}
-          <div className="absolute -inset-6 bg-gradient-to-tr from-[hsl(var(--primary))]/20 via-transparent to-[hsl(var(--secondary))]/20 blur-3xl pointer-events-none" />
-
-          <div className="relative bg-[hsl(var(--card))]/80 backdrop-blur-xl border border-[hsl(var(--border))] rounded-2xl p-8 sm:p-10 shadow-2xl shadow-black/50">
-            {/* Top border accent */}
-            <div className="absolute top-0 left-10 right-10 h-px bg-gradient-to-r from-transparent via-[hsl(var(--primary))] to-transparent" />
-
-            {/* Logo + heading */}
-            <div className="flex flex-col items-center text-center mb-8">
-              <motion.div
-                initial={{ scale: 0.8, opacity: 0 }}
-                animate={{ scale: 1, opacity: 1 }}
-                transition={{ delay: 0.2, type: "spring", stiffness: 200, damping: 15 }}
-                className="w-12 h-12 rounded-lg bg-[hsl(var(--card))] border border-[hsl(var(--primary))] flex items-center justify-center shadow-[0_0_20px_rgba(0,229,255,0.3)] mb-5"
-              >
-                <Zap className="w-6 h-6 text-[hsl(var(--primary))]" />
-              </motion.div>
-              <h1 className="text-2xl font-bold tracking-tight">Welcome to CloudRik</h1>
-              <p className="text-sm text-[hsl(var(--muted-foreground))] mt-2">
-                Sign in to deploy your apps in seconds.
-              </p>
-            </div>
-
-            {/* OAuth buttons */}
-            <div className="flex flex-col gap-3">
-              <motion.button
-                whileHover={{ y: -1 }}
-                whileTap={{ scale: 0.98 }}
-                onClick={() => handleLogin('google')}
-                className="group inline-flex items-center justify-center gap-3 h-12 px-5 rounded-lg bg-white text-gray-900 font-semibold text-sm hover:bg-gray-50 transition-all shadow-[0_0_0_1px_rgba(255,255,255,0.1)] hover:shadow-[0_0_25px_rgba(255,255,255,0.18)]"
-              >
-                <FcGoogle className="w-5 h-5" />
-                <span>Continue with Google</span>
-              </motion.button>
-
-              <motion.button
-                whileHover={{ y: -1 }}
-                whileTap={{ scale: 0.98 }}
-                onClick={() => handleLogin('github')}
-                className="group inline-flex items-center justify-center gap-3 h-12 px-5 rounded-lg bg-[hsl(var(--muted))]/40 border border-[hsl(var(--border))] text-white font-semibold text-sm hover:border-[hsl(var(--primary))]/50 hover:bg-[hsl(var(--muted))]/60 hover:shadow-[0_0_25px_rgba(0,229,255,0.15)] transition-all"
-              >
-                <Github className="w-5 h-5" />
-                <span>Continue with GitHub</span>
-              </motion.button>
-            </div>
-
-            {/* Secure auth marker */}
-            <div className="my-7 flex items-center gap-3">
-              <div className="flex-1 h-px bg-[hsl(var(--border))]" />
-              <div className="inline-flex items-center gap-1.5 text-[10px] uppercase tracking-widest text-[hsl(var(--muted-foreground))]">
-                <ShieldCheck className="w-3 h-3 text-[hsl(var(--primary))]" />
-                <span>Secure OAuth 2.0</span>
-              </div>
-              <div className="flex-1 h-px bg-[hsl(var(--border))]" />
-            </div>
-
-            {/* Terms */}
-            <p className="text-center text-xs text-[hsl(var(--muted-foreground))] leading-relaxed">
-              By continuing, you agree to our{" "}
-              <a href="#" className="text-[hsl(var(--primary))] hover:underline">
-                Terms of Service
-              </a>{" "}
-              and{" "}
-              <a href="#" className="text-[hsl(var(--primary))] hover:underline">
-                Privacy Policy
-              </a>
-              .
+          {/* Heading */}
+          <div className="flex flex-col items-center text-center mb-8">
+            <h1 className="text-2xl font-bold tracking-tight text-white">Welcome back</h1>
+            <p className="text-sm text-white/50 mt-2">
+              Sign in to deploy your apps in seconds.
             </p>
           </div>
 
-          {/* Below card */}
-          <p className="text-center text-xs text-[hsl(var(--muted-foreground))] mt-6">
-            New to CloudRik? Signing in creates your account automatically.
+          {/* OAuth buttons */}
+          <div className="flex flex-col gap-3">
+            <button
+              onClick={() => handleLogin('google')}
+              className="flex items-center justify-center gap-3 h-11 w-full rounded-lg bg-white text-black font-semibold text-sm hover:bg-gray-100 transition-colors"
+            >
+              <FcGoogle className="w-5 h-5" />
+              <span>Continue with Google</span>
+            </button>
+
+            <button
+              onClick={() => handleLogin('github')}
+              className="flex items-center justify-center gap-3 h-11 w-full rounded-lg bg-white/5 border border-white/10 text-white font-semibold text-sm hover:bg-white/10 transition-colors"
+            >
+              <Github className="w-5 h-5" />
+              <span>Continue with GitHub</span>
+            </button>
+          </div>
+
+          {/* Secure auth marker */}
+          <div className="my-8 flex items-center gap-3">
+            <div className="flex-1 h-px bg-white/10" />
+            <div className="inline-flex items-center gap-1.5 text-[10px] uppercase tracking-widest text-white/40">
+              <ShieldCheck className="w-3 h-3 text-white/40" />
+              <span>Secure OAuth 2.0</span>
+            </div>
+            <div className="flex-1 h-px bg-white/10" />
+          </div>
+
+          {/* Terms */}
+          <p className="text-center text-xs text-white/40 leading-relaxed">
+            By continuing, you agree to our{" "}
+            <a href="#" className="text-white/60 hover:text-white transition-colors hover:underline">
+              Terms of Service
+            </a>{" "}
+            and{" "}
+            <a href="#" className="text-white/60 hover:text-white transition-colors hover:underline">
+              Privacy Policy
+            </a>
+            .
           </p>
         </motion.div>
+
+        {/* Below card text */}
+        <p className="text-center text-xs text-white/40 mt-6">
+          New to CloudRik? Signing in creates your account automatically.
+        </p>
       </div>
     </div>
   );

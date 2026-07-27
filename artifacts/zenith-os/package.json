@@ -76,6 +76,8 @@
   },
   "dependencies": {
     "axios": "^1.16.1",
+    "dotted-map": "^3.1.0",
+    "motion": "^12.42.2",
     "zustand": "^5.0.13"
   }
 }

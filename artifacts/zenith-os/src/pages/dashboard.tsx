@@ -26,6 +26,7 @@ import {
   Paperclip,
   Mic,
   Send,
+  ExternalLink,
 } from "lucide-react";
 
 import {
@@ -319,7 +320,7 @@ function EmptyState() {
       >
         <div className="flex items-center justify-between mb-4 px-1">
           <div>
-            <h2 className="text-xl font-bold text-slate-800 mb-3">Ask Anything with Cloudrik</h2>
+            <h2 className="text-xl font-bold text-slate-800 mb-3">Ask Anything with CloudRik</h2>
             <p className="text-sm text-slate-600">Confused about deployment? Ask questions, plan your architecture, or fix errors instantly.</p>
           </div>
         </div>
@@ -337,7 +338,7 @@ function EmptyState() {
             {/* Left: Model label */}
             <div className="flex items-center gap-1.5 text-xs text-slate-500 font-medium">
               <div className="w-4 h-4 rounded-full bg-gradient-to-br from-indigo-500 to-purple-600 flex-shrink-0" />
-              Cloudrik AI
+              CloudRik AI
             </div>
 
             {/* Right: Icons + Send */}

@@ -64,6 +64,12 @@ export default defineConfig({
         proxyTimeout: 300000,
         timeout: 300000,
       },
+      // SupaSpire is served under the same domain at /supaspire.
+      // In dev this proxies to the standalone SupaSpire dev server.
+      "/supaspire": {
+        target: "http://localhost:5175",
+        changeOrigin: true,
+      },
     },
   },
   preview: {
